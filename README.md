@@ -2,6 +2,7 @@
 本仓库基于 [作者实现](https://github.com/fereenwong/cdViews)，用于 ScanQA 验证集复现与后续方法改进，**不是作者官方仓库**。
 
 - **日常实验与两台服务器配置：** [docs/SERVERS.md](docs/SERVERS.md)
+- **随机均匀采样对照与命令：** [docs/UNIFORM_BASELINE.md](docs/UNIFORM_BASELINE.md)
 - **项目约定：** [AGENTS.md](AGENTS.md)
 - **论文原文：** [docs/cdviews.pdf](docs/cdviews.pdf)
 - **代码与论文笔记：** [docs/CODE_PAPER_GUIDE_CN.md](docs/CODE_PAPER_GUIDE_CN.md)

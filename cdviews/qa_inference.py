@@ -23,6 +23,7 @@ from torch.nn.utils.rnn import pad_sequence
 import torch.nn.functional as F
 from view_distance_calculation import calculate_view_distance
 import pandas as pd
+from view_sampling import question_seed, uniform_views
 
 
 def preprocess_qwen(sources, tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False, max_len=2048,
@@ -144,29 +145,30 @@ def eval_model(args):
     model_path = os.path.expanduser(args.LVLM_ckpt)
     model_name = get_model_name_from_path(model_path)
     tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name)
-    # view selector model
-    view_selector = ViewSelector().to(model.device)
-    ckpt_file = args.pretrained_view_selector_ckpt.format(args.dataset)
-    view_selector.load_state_dict(torch.load(ckpt_file)['model'])
-    print('Loading the pretrained view_selector from {}'.format(ckpt_file))
-
     # Data
-    print("Test the view selector... ")
+    print(f"View selection: {args.view_selection}")
     test_mode = ['test_w_obj', 'test_wo_obj'] if args.dataset == 'ScanQA' else ['test', ]
 
     for mode in test_mode:
-        pair_dataset_test = ViewLabelDataset(args, mode=mode)
-        pair_dataloader_test = DataLoader(pair_dataset_test, batch_size=1, shuffle=False,
-                                          collate_fn=custom_collate_fn)
         save_rank_file = args.ranked_view_file.format(args.dataset, mode)
 
-        print('ranking images by view selector for {}_{}'.format(args.dataset, mode))
-        # you can download the prepared files and skip this step
+        # Cached full rankings also define the shared candidate pool for uniform
+        # sampling. Loading them needs neither selector weights nor features.
         if not os.path.exists(save_rank_file):
+            if args.view_selection == 'uniform':
+                raise FileNotFoundError(f'Uniform sampling needs a shared candidate list: {save_rank_file}')
+            view_selector = ViewSelector().to(model.device)
+            ckpt_file = args.pretrained_view_selector_ckpt.format(args.dataset)
+            view_selector.load_state_dict(torch.load(ckpt_file)['model'])
+            pair_dataset_test = ViewLabelDataset(args, mode=mode)
+            pair_dataloader_test = DataLoader(pair_dataset_test, batch_size=1, shuffle=False,
+                                              collate_fn=custom_collate_fn)
             ranking_views(pair_dataloader_test, tokenizer, model, view_selector, save_path=save_rank_file)
 
-        image_file_list = json.load(open(save_rank_file))
+        with open(save_rank_file) as stream:
+            image_file_list = json.load(stream)
         answers = []
+        selected_views = []
         answers_file = args.answers_file.format(args.dataset, mode)
 
         print('evaluating with QA for {}'.format(mode))
@@ -178,23 +180,23 @@ def eval_model(args):
         for line in tqdm(qa_data):
             scene_id = line['scene_id']
 
-            # calculate view distance
-            if not os.path.exists(args.view_distance_folder):
-                os.mkdir(args.view_distance_folder)
-
-            view_distance_file = os.path.join(args.view_distance_folder, '{}.csv'.format(scene_id))
-            if os.path.exists(view_distance_file):
-                distance_df = pd.read_csv(view_distance_file, index_col=0)
-            else:
-                distance_df = calculate_view_distance(scene_id, args)
-                # Saving the distance_df for reuse, as most scenes have more than one question
-                distance_df.to_csv(view_distance_file)
-
             question_id = str(line['question_id'])
-            image_files = image_file_list[question_id]
-            image_files = viewNMS(image_files, distance_df, num_images=args.input_views)
-            image_files = image_files if len(image_files) < args.input_views else image_files[:args.input_views]
+            candidates = image_file_list[question_id]
+            if args.view_selection == 'uniform':
+                # No relevance weighting, no NMS and no camera-pose processing.
+                image_files = uniform_views(candidates, args.input_views, args.seed, mode, question_id)
+            else:
+                os.makedirs(args.view_distance_folder, exist_ok=True)
+                view_distance_file = os.path.join(args.view_distance_folder, '{}.csv'.format(scene_id))
+                if os.path.exists(view_distance_file):
+                    distance_df = pd.read_csv(view_distance_file, index_col=0)
+                else:
+                    distance_df = calculate_view_distance(scene_id, args)
+                    distance_df.to_csv(view_distance_file)
+                image_files = viewNMS(candidates, distance_df, num_images=args.input_views)
             num_image = len(image_files)
+            selected_views.append({"scene_id": scene_id, "question_id": question_id,
+                                   "candidate_count": len(candidates), "images": image_files})
 
             line['from'] = 'human'
             question = line['question'] if args.dataset == 'ScanQA' else line['situation'] + line['question']
@@ -209,6 +211,10 @@ def eval_model(args):
                 image_tensors.append(image_tensor.half().to(model.device))
             # image_tensors = torch.cat(image_tensors, dim=0)
 
+            # Use a separate per-question RNG stream for decoding. This makes a
+            # smoke question use the same seed in a full run, even across shards.
+            if args.seed is not None:
+                transformers.set_seed(question_seed(args.seed, mode, question_id, "decode"))
             with torch.inference_mode():
                 output_ids = model.generate(
                     input_ids,
@@ -229,7 +235,12 @@ def eval_model(args):
                             "question_id": question_id,
                             "answer_top10": [ans for i in range(10)]})
 
-        json.dump(answers, open(answers_file, 'w'))
+        with open(answers_file, 'w') as stream:
+            json.dump(answers, stream)
+        with open(answers_file + '.views.json', 'w') as stream:
+            json.dump({"method": args.view_selection, "seed": args.seed,
+                       "input_views": args.input_views, "split": mode,
+                       "questions": selected_views}, stream, indent=2)
 
 
 if __name__ == "__main__":
@@ -244,11 +255,16 @@ if __name__ == "__main__":
     parser.add_argument("--num-chunks", type=int, default=1)
     parser.add_argument("--chunk-idx", type=int, default=0)
     parser.add_argument("--temperature", type=float, default=0.2)
+    parser.add_argument("--view-selection", choices=("cdviews", "uniform"), default="cdviews")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Launcher supplies a seed; None preserves legacy stochastic decoding")
     parser.add_argument("--top_p", type=float, default=None)
     parser.add_argument("--num_beams", type=int, default=1)
     parser.add_argument("--cfg_file", type=str, default="../cfgs/QA.yaml")
     args = parser.parse_args()
 
     args = load_and_update(args)
+    if args.view_selection == 'uniform' and args.seed is None:
+        parser.error("Uniform sampling requires an explicit --seed (or seed in YAML)")
 
     eval_model(args)

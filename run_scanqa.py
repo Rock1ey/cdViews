@@ -6,6 +6,7 @@ the upstream inference script saves only at the end of each split, not per quest
 
 import argparse
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -30,6 +31,7 @@ def write_json(path, value):
 def merge_answers(stage_dir, datasets, subsets, gpus):
     for split in datasets:
         by_id = {}
+        views_by_id = {}
         expected_ids = set()
         for gpu in gpus:
             rows = subsets[gpu][split]
@@ -48,11 +50,18 @@ def merge_answers(stage_dir, datasets, subsets, gpus):
                 by_id[qid] = answer
             if found != set(expected):
                 raise ValueError(f"Incomplete answers: GPU {gpu}, {split}, {len(found)}/{len(expected)}")
+            trace = read_json(stage_dir / f"gpu{gpu}" / f"ScanQA_{split}_answers.json.views.json")
+            trace_ids = [row["question_id"] for row in trace["questions"]]
+            if len(set(trace_ids)) != len(trace_ids) or set(trace_ids) != found:
+                raise ValueError(f"Selected-view trace does not match answers: GPU {gpu}, {split}")
+            views_by_id.update({row["question_id"]: row for row in trace["questions"]})
             expected_ids.update(expected)
         merged = [by_id[str(row["question_id"])] for row in datasets[split]
                   if str(row["question_id"]) in expected_ids]
         output = stage_dir / f"ScanQA_{split}_answers.json"
         write_json(output, merged)
+        trace["questions"] = [views_by_id[row["question_id"]] for row in merged]
+        write_json(Path(str(output) + ".views.json"), trace)
         print(f"[PASS] {split}: merged {len(merged)} answers -> {output}", flush=True)
 
 
@@ -67,6 +76,13 @@ def main():
                         help="Defaults to one GPU: CDV_GPU or 0; explicitly pass two IDs only when needed")
     parser.add_argument("--splits", nargs="+", choices=("val", *SPLITS), default=["val"],
                         help="Default: val (the project's evaluation split)")
+    parser.add_argument("--view-selection", choices=("cdviews", "uniform"), default="cdviews",
+                        help="Uniform samples without replacement from the full ranking's candidate set; no NMS")
+    parser.add_argument("--input-views", type=int, default=9)
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Stable per-question view sampling and decoding seed")
+    parser.add_argument("--temperature", type=float, default=0.2,
+                        help="Use 0 for greedy decoding; default 0.2 retains the previous sampling setting")
     args = parser.parse_args()
     if args.data_root is None:
         parser.error("Set CDV_DATA (source scripts/activate.sh lab|cloud) or pass --data-root")
@@ -74,6 +90,8 @@ def main():
         parser.error("Choose one GPU identifier or two different GPU identifiers")
     if len(set(args.splits)) != len(args.splits):
         parser.error("Do not repeat split names")
+    if args.input_views < 1 or args.temperature < 0:
+        parser.error("--input-views must be positive and --temperature must be nonnegative")
 
     repo = args.repo.resolve()
     root = args.data_root.resolve()
@@ -95,16 +113,32 @@ def main():
             raise ValueError("The upstream split-selection line changed; inspect qa_inference.py before adapting it")
         selected_source = source.replace(original, f"test_mode = {args.splits!r}")
 
-    # Verify rankings before launching: a missing file would trigger feature extraction inputs.
+    # Both methods use exactly the same candidate sets. Uniform ignores their
+    # ranks, rather than sampling only the selector's top-k or NMS survivors.
+    rankings = {}
+    image_names = {}
     for split, rows in datasets.items():
+        if split == "val" and len(rows) != 4675:
+            raise ValueError(f"Expected full ScanQA val annotations (4675 questions), found {len(rows)}")
+        if split == "val" and any(not row.get("answers") for row in rows):
+            raise ValueError("ScanQA val must contain reference answers")
         ids = [str(row["question_id"]) for row in rows]
         if len(ids) != len(set(ids)):
             raise ValueError(f"Duplicate question IDs: {split}")
         ranking = read_json(root / f"ScanQA_{split}_view_ranking.json")
-        for qid in ids:
+        rankings[split] = ranking
+        for row, qid in zip(rows, ids):
             frames = ranking.get(qid)
             if not isinstance(frames, list) or not frames or not all(isinstance(x, str) for x in frames):
                 raise ValueError(f"Missing/invalid flat ranking: {split}/{qid}")
+            if len(set(frames)) != len(frames):
+                raise ValueError(f"Duplicate candidate frames: {split}/{qid}")
+            scene = row["scene_id"]
+            if scene not in image_names:
+                image_names[scene] = set(os.listdir(root / "scannetv2/frames_square" / scene / "color"))
+            missing = set(frames) - image_names[scene]
+            if missing:
+                raise FileNotFoundError(f"Missing candidate images for {split}/{qid}: {sorted(missing)[:5]}")
 
     # Keep the original question order within each disjoint shard.
     subsets = {}
@@ -119,6 +153,27 @@ def main():
     if selected_source is not None:
         entry = stage_dir / "qa_inference_selected_splits.py"
         entry.write_text(selected_source)
+    # Keep the sampler next to the inference snapshot, so its implementation can
+    # be inspected together with the selected-view trace after the experiment.
+    (stage_dir / "view_sampling.py").write_text((repo / "cdviews/view_sampling.py").read_text())
+    revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
+                              capture_output=True, text=True)
+    diff = subprocess.run(["git", "diff", "HEAD"], cwd=repo, capture_output=True, text=True)
+    (stage_dir / "code.diff").write_text(diff.stdout)
+    inputs = {}
+    for split in args.splits:
+        for name, path in [("annotations", annotations / f"ScanQA_v1.0_{split}.json"),
+                           ("candidates", root / f"ScanQA_{split}_view_ranking.json")]:
+            inputs[f"{split}_{name}"] = {"path": str(path),
+                                          "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+    write_json(stage_dir / "experiment.json", {
+        "method": args.view_selection, "input_views": args.input_views,
+        "seed": args.seed, "temperature": args.temperature, "splits": args.splits,
+        "stage": args.stage, "gpus": args.gpus, "git_commit": revision.stdout.strip(),
+        "candidate_pool": "All entries in the supplied ranking, ignoring rank for uniform",
+        "uniform_order": "Random draw order; sampling without replacement",
+        "inputs": inputs,
+    })
     jobs = []
     for gpu in args.gpus:
         worker_dir = stage_dir / f"gpu{gpu}"
@@ -134,11 +189,15 @@ def main():
             path = worker_dir / f"ScanQA_v1.0_{split}.json"
             write_json(path, rows)
             cfg["ScanQA_file"][split] = str(path)
+            write_json(worker_dir / f"ScanQA_{split}_view_ranking.json",
+                       {str(row["question_id"]): rankings[split][str(row["question_id"])] for row in rows})
         cfg.update({
             "dataset": "ScanQA",
-            "input_views": 9,
+            "input_views": args.input_views,
+            "view_selection": args.view_selection,
+            "seed": args.seed,
             "batch_size": 1,
-            "temperature": 0.2,
+            "temperature": args.temperature,
             "top_p": None,
             "num_beams": 1,
             "image_folder": str(root / "scannetv2/frames_square"),
@@ -146,7 +205,7 @@ def main():
             "view_distance_folder": str(distance_dir),
             "LVLM_ckpt": str(root / "model/llava-onevision-qwen2-7b-ov"),
             "pretrained_view_selector_ckpt": str(root / "model/{}_view_selector.pth"),
-            "ranked_view_file": str(root / "{}_{}_view_ranking.json"),
+            "ranked_view_file": str(worker_dir / "{}_{}_view_ranking.json"),
             "answers_file": str(worker_dir / "{}_{}_answers.json"),
             "view_labeling_file": str(root / "{}_view_labeling.json"),
             "caption_file": str(root / "{}_QA_captions.json"),
@@ -174,7 +233,8 @@ def main():
         counts = {split: len(rows) for split, rows in subsets[gpu].items()}
         print(f"GPU {gpu}: {counts}; config: {config_path}", flush=True)
 
-    print("Sampling temperature=0.2; no claim of deterministic or paper-equivalent results.", flush=True)
+    print(f"Method={args.view_selection}; views={args.input_views}; seed={args.seed}; "
+          f"temperature={args.temperature}. Hardware/backend differences can still affect outputs.", flush=True)
     processes = []
     try:
         for gpu, worker_dir, env, command in jobs:
