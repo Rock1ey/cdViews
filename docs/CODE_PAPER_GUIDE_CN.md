@@ -1,6 +1,6 @@
 **cdViews 仓库与论文对应导读**
 
-本文依据本地仓库提交 `e1df64c`（`Update README.md`），于 2026-10-06 对照阅读。论文为 [3D Question Answering via only 2D Vision-Language Models](</Users/leye/作业/三维视觉/参考论文/cdViews_ICML2025.pdf>)。页码、公式编号和图表编号均按该 PDF。
+本文依据本地仓库提交 `e1df64c`（`Update README.md`），于 2026-10-06 对照阅读。论文为 [3D Question Answering via only 2D Vision-Language Models](cdviews.pdf)。页码、公式编号和图表编号均按该 PDF。
 
 本导读覆盖 cdViews 主流程的全部非空 Python 文件，并沿调用链阅读 LLaVA 的模型加载、视觉编码、图文拼接和答案生成实现。底层通用训练、服务和 TRL 代码按子系统说明，不把其中未被主流程调用的功能当作本文方法。代码片段为当前源码的连续节选；省略的部分由源码链接定位。
 
@@ -12,30 +12,30 @@
 
 | 文件或目录 | 做什么 | 与本文主流程的关系 |
 |---|---|---|
-| [README.md](/Users/leye/Projects/cdViews/README.md:1) | 项目说明、数据和权重链接、运行顺序、结果与评测说明 | 入口文档 |
-| [cfgs/QA.yaml](/Users/leye/Projects/cdViews/cfgs/QA.yaml:1) | 数据路径、模型路径、提示词、视图数、输出路径 | 所有核心脚本共享配置 |
-| [caption_generation.py](/Users/leye/Projects/cdViews/cdviews/caption_generation.py:76) | 将训练集问题和答案改写为描述句 | viewAnnotator 第一步；公式（5） |
-| [view_matching.py](/Users/leye/Projects/cdViews/cdviews/view_matching.py:76) | 用描述句逐张检查图像，生成正、负、不确定标签 | viewAnnotator 第二步；公式（6） |
-| [visual_feature_processing.py](/Users/leye/Projects/cdViews/cdviews/visual_feature_processing.py:76) | 提前编码场景全部 RGB 帧，按场景缓存视觉 token | 选择器的特征准备 |
-| [dataset.py](/Users/leye/Projects/cdViews/cdviews/dataset.py:8) | 训练时抽正负视图；测试时读取场景全部缓存特征 | 构造问题与视图配对样本 |
-| [ViewSelector.py](/Users/leye/Projects/cdViews/cdviews/ViewSelector.py:8) | 特征降维、自注意力、交叉注意力、池化及 BCE 损失 | viewSelector；图 3、公式（7）（8） |
-| [train.py](/Users/leye/Projects/cdViews/cdviews/train.py:80) | 提取问题词嵌入，训练选择器，保存 checkpoint | 本文选择器训练入口 |
-| [qa_inference.py](/Users/leye/Projects/cdViews/cdviews/qa_inference.py:87) | 所有视图打分、排序缓存、NMS、调用大模型回答 | 本文测试入口；公式（1）（2）（9） |
-| [view_distance_calculation.py](/Users/leye/Projects/cdViews/cdviews/view_distance_calculation.py:11) | 读取相机位姿，计算场景内两两视图距离 | 公式（10）至（12） |
-| [qa_utils.py](/Users/leye/Projects/cdViews/cdviews/qa_utils.py:17) | 配置合并、读取 ScanQA/SQA、拼接训练 batch | 共用工具 |
-| [llava/model/builder.py](/Users/leye/Projects/cdViews/llava/model/builder.py:27) | 加载 tokenizer、模型、视觉预处理器 | 连接核心脚本与底层大模型 |
-| [llava_arch.py](/Users/leye/Projects/cdViews/llava/model/llava_arch.py:191) | 图像编码、投影、将视觉 token 插入语言 token 序列 | 图 3 中 Visual Encoder、Projection 及图文拼接 |
-| [language_model/llava_qwen.py](/Users/leye/Projects/cdViews/llava/model/language_model/llava_qwen.py:46) | 将 Qwen2 与多模态输入接口结合 | 默认 LLaVA-OV 的语言生成路径 |
-| [multimodal_encoder/builder.py](/Users/leye/Projects/cdViews/llava/model/multimodal_encoder/builder.py:13) | 根据模型配置选择 SigLIP、CLIP 等视觉编码器 | 默认模型路径相关；其他编码器是通用支持 |
-| [multimodal_projector/builder.py](/Users/leye/Projects/cdViews/llava/model/multimodal_projector/builder.py:32) | 将视觉通道数转换到语言模型隐藏维度 | 图 3 中 Projection |
-| [multimodal_resampler/builder.py](/Users/leye/Projects/cdViews/llava/model/multimodal_resampler/builder.py:21) | 构建通用视觉重采样模块 | 核心 `encode_images` 中相应调用已注释；不是 viewSelector |
-| [llava/train/train.py](/Users/leye/Projects/cdViews/llava/train/train.py:1449) 与 [train_dpo.py](/Users/leye/Projects/cdViews/llava/train/train_dpo.py:1484) | 通用 LLaVA 指令微调、DPO 等 | 与 `cdviews/train.py` 是不同训练入口 |
-| [llava/serve/](/Users/leye/Projects/cdViews/llava/serve) | Gradio 界面、模型 worker、控制器、命令行交互 | 非论文批量问答入口 |
-| [trl/](/Users/leye/Projects/cdViews/trl) | trainer 提供 PPO/DPO/SFT 等；models 提供训练包装；extras、environment、core 提供辅助工具 | 未被 cdViews 选择器训练循环直接使用 |
-| [llava/mm_utils.py](/Users/leye/Projects/cdViews/llava/mm_utils.py:314)、[constants.py](/Users/leye/Projects/cdViews/llava/constants.py:6)、[conversation.py](/Users/leye/Projects/cdViews/llava/conversation.py:1) | 图像处理、特殊 token、通用对话模板 | 核心脚本另有复制的 `preprocess_qwen` |
-| [predict.py](/Users/leye/Projects/cdViews/predict.py:75)、[cog.yaml](/Users/leye/Projects/cdViews/cog.yaml:1) | Cog/Replicate 单图推理封装，代码加载 LLaVA-v1.5-13B | 不是 cdViews 的 7B 多视图问答入口 |
-| [pyproject.toml](/Users/leye/Projects/cdViews/pyproject.toml:8)、[requirements.txt](/Users/leye/Projects/cdViews/requirements.txt:1) | 包元数据、依赖清单 | 安装支持；不能据依赖中出现 DPO 等就认为论文使用了它 |
-| [REPRODUCE_A6000_CN.md](/Users/leye/Projects/cdViews/REPRODUCE_A6000_CN.md:1) | 本地已有复现说明 | 阅读时为未跟踪文件；不是据此认定原始实现的证据 |
+| [README.md](../README.md#L1) | 项目说明、数据和权重链接、运行顺序、结果与评测说明 | 入口文档 |
+| [cfgs/QA.yaml](../cfgs/QA.yaml#L1) | 数据路径、模型路径、提示词、视图数、输出路径 | 所有核心脚本共享配置 |
+| [caption_generation.py](../cdviews/caption_generation.py#L76) | 将训练集问题和答案改写为描述句 | viewAnnotator 第一步；公式（5） |
+| [view_matching.py](../cdviews/view_matching.py#L76) | 用描述句逐张检查图像，生成正、负、不确定标签 | viewAnnotator 第二步；公式（6） |
+| [visual_feature_processing.py](../cdviews/visual_feature_processing.py#L76) | 提前编码场景全部 RGB 帧，按场景缓存视觉 token | 选择器的特征准备 |
+| [dataset.py](../cdviews/dataset.py#L8) | 训练时抽正负视图；测试时读取场景全部缓存特征 | 构造问题与视图配对样本 |
+| [ViewSelector.py](../cdviews/ViewSelector.py#L8) | 特征降维、自注意力、交叉注意力、池化及 BCE 损失 | viewSelector；图 3、公式（7）（8） |
+| [train.py](../cdviews/train.py#L80) | 提取问题词嵌入，训练选择器，保存 checkpoint | 本文选择器训练入口 |
+| [qa_inference.py](../cdviews/qa_inference.py#L87) | 所有视图打分、排序缓存、NMS、调用大模型回答 | 本文测试入口；公式（1）（2）（9） |
+| [view_distance_calculation.py](../cdviews/view_distance_calculation.py#L11) | 读取相机位姿，计算场景内两两视图距离 | 公式（10）至（12） |
+| [qa_utils.py](../cdviews/qa_utils.py#L17) | 配置合并、读取 ScanQA/SQA、拼接训练 batch | 共用工具 |
+| [llava/model/builder.py](../llava/model/builder.py#L27) | 加载 tokenizer、模型、视觉预处理器 | 连接核心脚本与底层大模型 |
+| [llava_arch.py](../llava/model/llava_arch.py#L191) | 图像编码、投影、将视觉 token 插入语言 token 序列 | 图 3 中 Visual Encoder、Projection 及图文拼接 |
+| [language_model/llava_qwen.py](../llava/model/language_model/llava_qwen.py#L46) | 将 Qwen2 与多模态输入接口结合 | 默认 LLaVA-OV 的语言生成路径 |
+| [multimodal_encoder/builder.py](../llava/model/multimodal_encoder/builder.py#L13) | 根据模型配置选择 SigLIP、CLIP 等视觉编码器 | 默认模型路径相关；其他编码器是通用支持 |
+| [multimodal_projector/builder.py](../llava/model/multimodal_projector/builder.py#L32) | 将视觉通道数转换到语言模型隐藏维度 | 图 3 中 Projection |
+| [multimodal_resampler/builder.py](../llava/model/multimodal_resampler/builder.py#L21) | 构建通用视觉重采样模块 | 核心 `encode_images` 中相应调用已注释；不是 viewSelector |
+| [llava/train/train.py](../llava/train/train.py#L1449) 与 [train_dpo.py](../llava/train/train_dpo.py#L1484) | 通用 LLaVA 指令微调、DPO 等 | 与 `cdviews/train.py` 是不同训练入口 |
+| [llava/serve/](../llava/serve) | Gradio 界面、模型 worker、控制器、命令行交互 | 非论文批量问答入口 |
+| [trl/](../trl) | trainer 提供 PPO/DPO/SFT 等；models 提供训练包装；extras、environment、core 提供辅助工具 | 未被 cdViews 选择器训练循环直接使用 |
+| [llava/mm_utils.py](../llava/mm_utils.py#L314)、[constants.py](../llava/constants.py#L6)、[conversation.py](../llava/conversation.py#L1) | 图像处理、特殊 token、通用对话模板 | 核心脚本另有复制的 `preprocess_qwen` |
+| [predict.py](../predict.py#L75)、[cog.yaml](../cog.yaml#L1) | Cog/Replicate 单图推理封装，代码加载 LLaVA-v1.5-13B | 不是 cdViews 的 7B 多视图问答入口 |
+| [pyproject.toml](../pyproject.toml#L8)、[requirements.txt](../requirements.txt#L1) | 包元数据、依赖清单 | 安装支持；不能据依赖中出现 DPO 等就认为论文使用了它 |
+| [REPRODUCE_A6000_CN.md](setup/REPRODUCE_A6000_CN.md#L1) | 本地已有复现说明 | 阅读时为未跟踪文件；不是据此认定原始实现的证据 |
 
 `cdviews/__init__.py` 为空；`images/framework.png` 是 README 的架构图。
 
@@ -96,7 +96,7 @@ ranking JSON:
 
 $$C=\operatorname{LVLM}(Q,A,\operatorname{Prompt}_R).$$
 
-[caption_generation.py:98](/Users/leye/Projects/cdViews/cdviews/caption_generation.py:98) 拼接 `Q: ... A: ...`，使用 `prompt_R`，然后调用 `model.generate`：
+[caption_generation.py:98](../cdviews/caption_generation.py#L98) 拼接 `Q: ... A: ...`，使用 `prompt_R`，然后调用 `model.generate`：
 
 ```python
         for i in range(len(line['answers'])):
@@ -124,7 +124,7 @@ $$C=\operatorname{LVLM}(Q,A,\operatorname{Prompt}_R).$$
 
 $$S_i=\operatorname{LVLM}(C,V_i,\operatorname{Prompt}_M).$$
 
-[view_matching.py:110](/Users/leye/Projects/cdViews/cdviews/view_matching.py:110) 为每张图片构造匹配任务：
+[view_matching.py:110](../cdviews/view_matching.py#L110) 为每张图片构造匹配任务：
 
 ```python
         for image_name in image_files:
@@ -140,7 +140,7 @@ $$S_i=\operatorname{LVLM}(C,V_i,\operatorname{Prompt}_M).$$
             image_tensors.append(image_tensor.half().cuda())
 ```
 
-描述句后面的图片通过 `model.generate(..., images=image_tensors)` 输入，见第 123–133 行。`prompt_M` 是 A/B/C 分类指令；`context_M` 是附录图 S1 的逐步检查示例，均位于 [QA.yaml:24](/Users/leye/Projects/cdViews/cfgs/QA.yaml:24)。
+描述句后面的图片通过 `model.generate(..., images=image_tensors)` 输入，见第 123–133 行。`prompt_M` 是 A/B/C 分类指令；`context_M` 是附录图 S1 的逐步检查示例，均位于 [QA.yaml:24](../cfgs/QA.yaml#L24)。
 
 标签解析：
 
@@ -166,7 +166,7 @@ $$S_i=\operatorname{LVLM}(C,V_i,\operatorname{Prompt}_M).$$
 
 **4. 选择器看到的特征，是视觉投影结果和语言模型的词嵌入。**
 
-[visual_feature_processing.py:106](/Users/leye/Projects/cdViews/cdviews/visual_feature_processing.py:106) 提前保存视觉特征：
+[visual_feature_processing.py:106](../cdviews/visual_feature_processing.py#L106) 提前保存视觉特征：
 
 ```python
             with torch.inference_mode():
@@ -180,7 +180,7 @@ $$S_i=\operatorname{LVLM}(C,V_i,\operatorname{Prompt}_M).$$
         torch.save(feature_dict, feature_save_file)
 ```
 
-其中 `model.encode_images` 的实现位于 [llava_arch.py:191](/Users/leye/Projects/cdViews/llava/model/llava_arch.py:191)：
+其中 `model.encode_images` 的实现位于 [llava_arch.py:191](../llava/model/llava_arch.py#L191)：
 
 ```python
     def encode_images(self, images):
@@ -194,9 +194,9 @@ $$S_i=\operatorname{LVLM}(C,V_i,\operatorname{Prompt}_M).$$
 
 `RGB → Visual Encoder → Projection → 可供选择器使用的视觉 token`。
 
-`image_newline` 是额外的图像分隔 token，不是另一张视图。按仓库默认选择器的 3584 输入维度，以及 SigLIP 分支断言的 729 个视觉 patch token，再加一个 newline，单张缓存特征可解释为 `[730,3584]`。这是假定默认 LLaVA-OV/SigLIP 配置的形状，不是任何模型都必须具有的形状。视觉编码器实现见 [siglip_encoder.py:576](/Users/leye/Projects/cdViews/llava/model/multimodal_encoder/siglip_encoder.py:576)；实际模型组件仍由外部 checkpoint 配置决定。
+`image_newline` 是额外的图像分隔 token，不是另一张视图。按仓库默认选择器的 3584 输入维度，以及 SigLIP 分支断言的 729 个视觉 patch token，再加一个 newline，单张缓存特征可解释为 `[730,3584]`。这是假定默认 LLaVA-OV/SigLIP 配置的形状，不是任何模型都必须具有的形状。视觉编码器实现见 [siglip_encoder.py:576](../llava/model/multimodal_encoder/siglip_encoder.py#L576)；实际模型组件仍由外部 checkpoint 配置决定。
 
-问题特征提取位于 [train.py:85](/Users/leye/Projects/cdViews/cdviews/train.py:85)：
+问题特征提取位于 [train.py:85](../cdviews/train.py#L85)：
 
 ```python
         text_embeds_list = []
@@ -218,7 +218,7 @@ $$S_i=\operatorname{LVLM}(C,V_i,\operatorname{Prompt}_M).$$
 
 `text_embeds_list += ... * len(image_files)` 将同一问题复制给它的每张视图。虽然变量名叫 `bs`，进入选择器后的 batch 维实际是“问题与视图配对数”。
 
-训练采样位于 [dataset.py:54](/Users/leye/Projects/cdViews/cdviews/dataset.py:54)：
+训练采样位于 [dataset.py:54](../cdviews/dataset.py#L54)：
 
 ```python
         if self.mode == 'train':
@@ -246,11 +246,11 @@ $$S_i=\operatorname{LVLM}(C,V_i,\operatorname{Prompt}_M).$$
 | AttFlat 后 | `[M,512]` | `[M,512]` |
 | 余弦相似度 | 每对得到一个标量，共 `[M]` | 同左 |
 
-其中 `M≤80`，`P` 为视觉 token 数，`L` 为批内填充后的文本长度。`custom_collate_fn` 负责拼接图像样本与标签，见 [qa_utils.py:95](/Users/leye/Projects/cdViews/cdviews/qa_utils.py:95)。
+其中 `M≤80`，`P` 为视觉 token 数，`L` 为批内填充后的文本长度。`custom_collate_fn` 负责拼接图像样本与标签，见 [qa_utils.py:95](../cdviews/qa_utils.py#L95)。
 
 **5. ViewSelector 的网络可对应到图 3 的 Linear、Transformer、Pooling。**
 
-[ViewSelector.py:9](/Users/leye/Projects/cdViews/cdviews/ViewSelector.py:9) 给出默认结构：
+[ViewSelector.py:9](../cdviews/ViewSelector.py#L9) 给出默认结构：
 
 ```python
     def __init__(self, input_channel=3584, embedding_dim=256, flat_out_size=512, num_layers=2, num_heads=8):
@@ -323,7 +323,7 @@ $$S_i=\operatorname{LVLM}(C,V_i,\operatorname{Prompt}_M).$$
 
 $$\operatorname{Attention}(Q,K,V)=\operatorname{softmax}\left(QK^\top/\sqrt{d_k}+\text{mask}\right)V.$$
 
-该式用于解释实现，并非论文另行编号的公式。源码在 [ViewSelector.py:234](/Users/leye/Projects/cdViews/cdviews/ViewSelector.py:234)。
+该式用于解释实现，并非论文另行编号的公式。源码在 [ViewSelector.py:234](../cdviews/ViewSelector.py#L234)。
 
 从 batch 的构造可知，每张图与问题独立配对。选择器没有在这一层直接对“同一场景不同视图之间的 token”做跨视图注意力；它对各视图评分，随后由 viewNMS 处理重复，最终由问答大模型同时接收多视图。
 
@@ -357,7 +357,7 @@ $$\mathcal L=-\frac1M\sum_i\left[y_i\log p_i+(1-y_i)\log(1-p_i)\right].$$
 
 这里用 `y_i` 表示伪标签，用 `p_i` 表示映射后的预测，避免论文符号混淆。论文公式（8）按其定义将标签与预测的位置写反，代码调用 `nn.BCELoss(prediction,target)` 的顺序则正确。余弦值到 `[0,1]` 的映射，也补上了正文未明确给出的步骤。
 
-推理时 [qa_inference.py:105](/Users/leye/Projects/cdViews/cdviews/qa_inference.py:105) 直接按原始余弦分数排序：
+推理时 [qa_inference.py:105](../cdviews/qa_inference.py#L105) 直接按原始余弦分数排序：
 
 ```python
             image_embeds = image_embeds.float()
@@ -388,7 +388,7 @@ $$\mathcal L=-\frac1M\sum_i\left[y_i\log p_i+(1-y_i)\log(1-p_i)\right].$$
 
 **7. 训练循环对应“仅训练轻量选择器”。**
 
-[train.py:122](/Users/leye/Projects/cdViews/cdviews/train.py:122)：
+[train.py:122](../cdviews/train.py#L122)：
 
 ```python
     learning_rate, num_epoches = 0.00005, 10
@@ -418,7 +418,7 @@ $$\mathcal L=-\frac1M\sum_i\left[y_i\log p_i+(1-y_i)\log(1-p_i)\right].$$
 
 保存内容是 epoch、选择器参数和优化器状态，不包含一套微调后的 LLaVA 参数。本文件的 `eval_model` 名字容易误导：它实际执行训练，没有验证集打分或自动选取最佳 epoch 的步骤。
 
-需要精确区分“不更新”和“不求梯度”：训练脚本没有显式对整个 LLaVA 调用 `requires_grad_(False)`，提取问题嵌入时也没有 `no_grad` 或 `detach`。因此，若 embedding 权重保留可求梯度状态，反向传播仍会为其计算、累积梯度；它不在优化器中，所以不会被该优化器更新。`disable_torch_init` 只是跳过默认初始化，见 [utils.py:163](/Users/leye/Projects/cdViews/llava/utils.py:163)，不能把它解释为冻结模型。
+需要精确区分“不更新”和“不求梯度”：训练脚本没有显式对整个 LLaVA 调用 `requires_grad_(False)`，提取问题嵌入时也没有 `no_grad` 或 `detach`。因此，若 embedding 权重保留可求梯度状态，反向传播仍会为其计算、累积梯度；它不在优化器中，所以不会被该优化器更新。`disable_torch_init` 只是跳过默认初始化，见 [utils.py:163](../llava/utils.py#L163)，不能把它解释为冻结模型。
 
 **8. viewNMS 与相机距离基本直接对应公式（9）至（12）。**
 
@@ -429,7 +429,7 @@ D_{\rm pos}(i,j)=\lVert t_i-t_j\rVert_2,$$
 
 $$D(i,j)=D_{\rm pos}(i,j)+D_{\rm ori}(i,j).$$
 
-位姿读取函数用 `pose_matrix[:3,3]` 作为位置，`pose_matrix[:3,:3]` 作为旋转矩阵，再转四元数，见 [view_distance_calculation.py:11](/Users/leye/Projects/cdViews/cdviews/view_distance_calculation.py:11)。因此它要求输入位姿符合该约定；不能不加转换地换入另一种外参约定。
+位姿读取函数用 `pose_matrix[:3,3]` 作为位置，`pose_matrix[:3,:3]` 作为旋转矩阵，再转四元数，见 [view_distance_calculation.py:11](../cdviews/view_distance_calculation.py#L11)。因此它要求输入位姿符合该约定；不能不加转换地换入另一种外参约定。
 
 距离函数：
 
@@ -458,7 +458,7 @@ def camera_distance(pose1, pose2, position_weight=1.0, orientation_weight=1.0):
 
 `calculate_image_distance_` 为所有图像生成对称距离表，复杂度随视图数约为 `O(N²)`。`calculate_view_distance` 将 `pose/123.txt` 对应到 `123.jpg`。推理时按场景缓存 CSV，重复问题可复用相机距离。
 
-公式（9）的实现位于 [qa_inference.py:126](/Users/leye/Projects/cdViews/cdviews/qa_inference.py:126)：
+公式（9）的实现位于 [qa_inference.py:126](../cdviews/qa_inference.py#L126)：
 
 ```python
 def viewNMS(list_of_images, neighbour_df, num_images, distance_threshold=0.5):
@@ -492,7 +492,7 @@ def viewNMS(list_of_images, neighbour_df, num_images, distance_threshold=0.5):
 
 $$\mathcal M'=F(\mathcal M,Q,k).$$
 
-对应 `ranking_views` 排序，再在 [qa_inference.py:193](/Users/leye/Projects/cdViews/cdviews/qa_inference.py:193) 调用 NMS：
+对应 `ranking_views` 排序，再在 [qa_inference.py:193](../cdviews/qa_inference.py#L193) 调用 NMS：
 
 ```python
             question_id = str(line['question_id'])
@@ -514,7 +514,7 @@ SQA 在这里将 `situation` 与 `question` 拼接；`dataset.py` 返回给选�
 
 $$A=\operatorname{LVLM}(\mathcal M',Q).$$
 
-它在 [qa_inference.py:205](/Users/leye/Projects/cdViews/cdviews/qa_inference.py:205) 读取所选 RGB 帧，并调用生成：
+它在 [qa_inference.py:205](../cdviews/qa_inference.py#L205) 读取所选 RGB 帧，并调用生成：
 
 ```python
             image_tensors = []
@@ -551,7 +551,7 @@ $$A=\operatorname{LVLM}(\mathcal M',Q).$$
 
 `qa_inference.eval_model → LlavaQwenForCausalLM.generate → prepare_inputs_labels_for_multimodal → encode_images → 图文 embedding 拼接 → Qwen2 自回归生成`。
 
-[llava_qwen.py:130](/Users/leye/Projects/cdViews/llava/model/language_model/llava_qwen.py:130)：
+[llava_qwen.py:130](../llava/model/language_model/llava_qwen.py#L130)：
 
 ```python
         if images is not None:
@@ -562,7 +562,7 @@ $$A=\operatorname{LVLM}(\mathcal M',Q).$$
         return super().generate(position_ids=position_ids, attention_mask=attention_mask, inputs_embeds=inputs_embeds, **kwargs)
 ```
 
-`preprocess_qwen` 把每个 `<image>` 转成特殊索引 `IMAGE_TOKEN_INDEX=-200`；它不是普通词表中一个能表示整张图片的 token。随后 [llava_arch.py:468](/Users/leye/Projects/cdViews/llava/model/llava_arch.py:468) 用对应图片的整段视觉特征替代占位符：
+`preprocess_qwen` 把每个 `<image>` 转成特殊索引 `IMAGE_TOKEN_INDEX=-200`；它不是普通词表中一个能表示整张图片的 token。随后 [llava_arch.py:468](../llava/model/llava_arch.py#L468) 用对应图片的整段视觉特征替代占位符：
 
 ```python
             for i in range(num_images + 1):
@@ -586,25 +586,25 @@ $$A=\operatorname{LVLM}(\mathcal M',Q).$$
 
 | 论文位置 | 内容 | 仓库对应 | 一致性说明 |
 |---|---|---|---|
-| 公式（1），第 4 页 | 选择子集 `F(M,Q,k)` | [qa_inference.py:87](/Users/leye/Projects/cdViews/cdviews/qa_inference.py:87)、[qa_inference.py:193](/Users/leye/Projects/cdViews/cdviews/qa_inference.py:193) | 排序与 NMS 组合；实际可能返回少于 k 张 |
-| 公式（2），第 4 页 | 所选视图与问题生成答案 | [qa_inference.py:212](/Users/leye/Projects/cdViews/cdviews/qa_inference.py:212) | 对应 `model.generate` |
+| 公式（1），第 4 页 | 选择子集 `F(M,Q,k)` | [qa_inference.py:87](../cdviews/qa_inference.py#L87)、[qa_inference.py:193](../cdviews/qa_inference.py#L193) | 排序与 NMS 组合；实际可能返回少于 k 张 |
+| 公式（2），第 4 页 | 所选视图与问题生成答案 | [qa_inference.py:212](../cdviews/qa_inference.py#L212) | 对应 `model.generate` |
 | 公式（3），第 4 页 | 均匀采样基线 | 当前核心目录未提供专用实验入口 | 训练集正负随机采样不是这一基线 |
 | 公式（4），第 4 页 | BLIP 图文检索基线 | 当前核心目录未提供 BLIP 检索实现 | 不能把选择器余弦相似度称为这里的 BLIP 基线 |
-| 公式（5），第 5 页 | QA→caption | [caption_generation.py:98](/Users/leye/Projects/cdViews/cdviews/caption_generation.py:98) | 为每个答案生成，匹配时只取第一条 |
-| 公式（6），第 6 页 | caption 与视图匹配标签 | [view_matching.py:110](/Users/leye/Projects/cdViews/cdviews/view_matching.py:110) | A/B/C 通过字符串包含关系解析 |
-| 公式（7），第 6 页 | 问题、视图向量的余弦分数 | [ViewSelector.py:332](/Users/leye/Projects/cdViews/cdviews/ViewSelector.py:332)、[qa_inference.py:106](/Users/leye/Projects/cdViews/cdviews/qa_inference.py:106) | 训练与推理均使用；训练后接 `(s+1)/2` |
-| 公式（8），第 6 页 | BCE 损失 | [ViewSelector.py:329](/Users/leye/Projects/cdViews/cdviews/ViewSelector.py:329) | 代码标签/预测顺序正确，论文写法疑似笔误 |
-| 公式（9），第 6 页 | 按距离阈值保留视图 | [qa_inference.py:126](/Users/leye/Projects/cdViews/cdviews/qa_inference.py:126) | `D=T` 的边界与正文不同 |
-| 公式（10），第 6 页 | 四元数旋转距离 | [view_distance_calculation.py:33](/Users/leye/Projects/cdViews/cdviews/view_distance_calculation.py:33) | 增加 `clip` 数值保护 |
-| 公式（11），第 6 页 | 欧氏位置距离 | [view_distance_calculation.py:30](/Users/leye/Projects/cdViews/cdviews/view_distance_calculation.py:30) | 直接对应 |
-| 公式（12），第 7 页 | 位置与朝向距离之和 | [view_distance_calculation.py:37](/Users/leye/Projects/cdViews/cdviews/view_distance_calculation.py:37) | 支持权重，默认均为 1 |
+| 公式（5），第 5 页 | QA→caption | [caption_generation.py:98](../cdviews/caption_generation.py#L98) | 为每个答案生成，匹配时只取第一条 |
+| 公式（6），第 6 页 | caption 与视图匹配标签 | [view_matching.py:110](../cdviews/view_matching.py#L110) | A/B/C 通过字符串包含关系解析 |
+| 公式（7），第 6 页 | 问题、视图向量的余弦分数 | [ViewSelector.py:332](../cdviews/ViewSelector.py#L332)、[qa_inference.py:106](../cdviews/qa_inference.py#L106) | 训练与推理均使用；训练后接 `(s+1)/2` |
+| 公式（8），第 6 页 | BCE 损失 | [ViewSelector.py:329](../cdviews/ViewSelector.py#L329) | 代码标签/预测顺序正确，论文写法疑似笔误 |
+| 公式（9），第 6 页 | 按距离阈值保留视图 | [qa_inference.py:126](../cdviews/qa_inference.py#L126) | `D=T` 的边界与正文不同 |
+| 公式（10），第 6 页 | 四元数旋转距离 | [view_distance_calculation.py:33](../cdviews/view_distance_calculation.py#L33) | 增加 `clip` 数值保护 |
+| 公式（11），第 6 页 | 欧氏位置距离 | [view_distance_calculation.py:30](../cdviews/view_distance_calculation.py#L30) | 直接对应 |
+| 公式（12），第 7 页 | 位置与朝向距离之和 | [view_distance_calculation.py:37](../cdviews/view_distance_calculation.py#L37) | 支持权重，默认均为 1 |
 | 公式（13），第 14 页 | 直接使用 QA 做匹配的消融 | 当前匹配脚本未提供开关 | 发布脚本固定走 caption 路线 |
 
 附录中的不同骨干、BridgeQA+LLaVA-OV 微调等实验，也不能仅凭 `llava/` 有通用训练功能就认定已有可直接运行的复现实验入口。
 
 **11. 视觉 mask 是当前源码最需要单独核对的实现疑点。**
 
-[ViewSelector.py:50](/Users/leye/Projects/cdViews/cdviews/ViewSelector.py:50)：
+[ViewSelector.py:50](../cdviews/ViewSelector.py#L50)：
 
 ```python
     def forward(self, image_embedding, text_embedding):
@@ -665,23 +665,23 @@ $$A=\operatorname{LVLM}(\mathcal M',Q).$$
 
 | 实现细节 | 源码证据 | 对理解或复现的影响 |
 |---|---|---|
-| 已有 ranking 文件时跳过重新排序 | [qa_inference.py:163](/Users/leye/Projects/cdViews/cdviews/qa_inference.py:163) | 换选择器 checkpoint 后若仍读旧 ranking，最终结果并未评测新选择器 |
-| 即使复用 ranking，仍先加载 selector 权重 | [qa_inference.py:148](/Users/leye/Projects/cdViews/cdviews/qa_inference.py:148) | 当前脚本并不是完全无需 selector checkpoint 的缓存入口 |
-| 当前测试 split 写在代码中 | [qa_inference.py:155](/Users/leye/Projects/cdViews/cdviews/qa_inference.py:155) | ScanQA 默认跑两个 test，SQA 跑 test；没有直接的 val 命令行开关 |
-| NMS 阈值默认 0.5，调用未传入新阈值 | [qa_inference.py:126](/Users/leye/Projects/cdViews/cdviews/qa_inference.py:126)、[qa_inference.py:195](/Users/leye/Projects/cdViews/cdviews/qa_inference.py:195) | 调节 `input_views` 不会同时调节 NMS 阈值 |
-| 提取特征时硬编码每批 100 张 | [visual_feature_processing.py:88](/Users/leye/Projects/cdViews/cdviews/visual_feature_processing.py:88) | 和训练的 batch_size=8 是不同概念 |
-| 不自动补满被 NMS 抑制后的视图数 | [qa_inference.py:130](/Users/leye/Projects/cdViews/cdviews/qa_inference.py:130) | `input_views=9` 是最多 9 张 |
-| 声明了 num-chunks/chunk-idx，但主循环没有使用 | [qa_inference.py:244](/Users/leye/Projects/cdViews/cdviews/qa_inference.py:244) | 不能据这些参数认定已实现多进程数据分片 |
-| 选择器训练无 DDP 调用、无验证选模循环 | [train.py:107](/Users/leye/Projects/cdViews/cdviews/train.py:107) | 默认是简单训练脚本，不是完整分布式实验框架 |
-| 推理只保存答案 JSON | [qa_inference.py:232](/Users/leye/Projects/cdViews/cdviews/qa_inference.py:232) | 本地仓库没有附带本文完整 EM/BLEU/ROUGE/CIDEr 评测入口 |
-| SQA 分数存在评测口径说明 | [README.md:168](/Users/leye/Projects/cdViews/README.md:168) | README 称 56.8 来自官方 LLM-based evaluator，55.6 来自其所引用的 Refined EM 严格匹配脚本 |
+| 已有 ranking 文件时跳过重新排序 | [qa_inference.py:163](../cdviews/qa_inference.py#L163) | 换选择器 checkpoint 后若仍读旧 ranking，最终结果并未评测新选择器 |
+| 即使复用 ranking，仍先加载 selector 权重 | [qa_inference.py:148](../cdviews/qa_inference.py#L148) | 当前脚本并不是完全无需 selector checkpoint 的缓存入口 |
+| 当前测试 split 写在代码中 | [qa_inference.py:155](../cdviews/qa_inference.py#L155) | ScanQA 默认跑两个 test，SQA 跑 test；没有直接的 val 命令行开关 |
+| NMS 阈值默认 0.5，调用未传入新阈值 | [qa_inference.py:126](../cdviews/qa_inference.py#L126)、[qa_inference.py:195](../cdviews/qa_inference.py#L195) | 调节 `input_views` 不会同时调节 NMS 阈值 |
+| 提取特征时硬编码每批 100 张 | [visual_feature_processing.py:88](../cdviews/visual_feature_processing.py#L88) | 和训练的 batch_size=8 是不同概念 |
+| 不自动补满被 NMS 抑制后的视图数 | [qa_inference.py:130](../cdviews/qa_inference.py#L130) | `input_views=9` 是最多 9 张 |
+| 声明了 num-chunks/chunk-idx，但主循环没有使用 | [qa_inference.py:244](../cdviews/qa_inference.py#L244) | 不能据这些参数认定已实现多进程数据分片 |
+| 选择器训练无 DDP 调用、无验证选模循环 | [train.py:107](../cdviews/train.py#L107) | 默认是简单训练脚本，不是完整分布式实验框架 |
+| 推理只保存答案 JSON | [qa_inference.py:232](../cdviews/qa_inference.py#L232) | 本地仓库没有附带本文完整 EM/BLEU/ROUGE/CIDEr 评测入口 |
+| SQA 分数存在评测口径说明 | [README.md:168](../README.md#L168) | README 称 56.8 来自官方 LLM-based evaluator，55.6 来自其所引用的 Refined EM 严格匹配脚本 |
 
 最后这一项补充了仅看论文无法获知的信息：对比 SQA 数字时需要同时写明评价脚本和口径，不能把 56.8 与 55.6 当成完全相同指标下的性能变化。此处转述的是本地 README 的说明，没有独立重新运行外部评测器。
 
 **13. 建议沿同一个样本读完下面这条路径。**
 
-先读 [QA.yaml](/Users/leye/Projects/cdViews/cfgs/QA.yaml:1) 理清输入输出，再读 [dataset.py](/Users/leye/Projects/cdViews/cdviews/dataset.py:46) 看一条问题如何变成多个图文配对。随后读 [ViewSelector.forward](/Users/leye/Projects/cdViews/cdviews/ViewSelector.py:50)、[SGA.forward](/Users/leye/Projects/cdViews/cdviews/ViewSelector.py:310)、[BCELoss.forward](/Users/leye/Projects/cdViews/cdviews/ViewSelector.py:331)，即可掌握选择器主体。
+先读 [QA.yaml](../cfgs/QA.yaml#L1) 理清输入输出，再读 [dataset.py](../cdviews/dataset.py#L46) 看一条问题如何变成多个图文配对。随后读 [ViewSelector.forward](../cdviews/ViewSelector.py#L50)、[SGA.forward](../cdviews/ViewSelector.py#L310)、[BCELoss.forward](../cdviews/ViewSelector.py#L331)，即可掌握选择器主体。
 
-接着读 [train_epoch](/Users/leye/Projects/cdViews/cdviews/train.py:80) 看监督怎样进入网络，再读 [ranking_views](/Users/leye/Projects/cdViews/cdviews/qa_inference.py:87)、[viewNMS](/Users/leye/Projects/cdViews/cdviews/qa_inference.py:126)、[最终生成](/Users/leye/Projects/cdViews/cdviews/qa_inference.py:193) 看测试链路。最后回看两个 viewAnnotator 脚本，追溯标签从哪里来。
+接着读 [train_epoch](../cdviews/train.py#L80) 看监督怎样进入网络，再读 [ranking_views](../cdviews/qa_inference.py#L87)、[viewNMS](../cdviews/qa_inference.py#L126)、[最终生成](../cdviews/qa_inference.py#L193) 看测试链路。最后回看两个 viewAnnotator 脚本，追溯标签从哪里来。
 
 读懂这条主线之后，再深入 `llava_arch.py` 的图像 token 插入逻辑。理解本文贡献不需要先通读全部通用 LLaVA 训练器、服务代码和 TRL。
