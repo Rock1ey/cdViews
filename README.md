@@ -1,7 +1,27 @@
 # cdViews
-This repository contains the official PyTorch implementation of the following paper:
+本仓库基于 [作者实现](https://github.com/fereenwong/cdViews)，用于 ScanQA 验证集复现与后续方法改进，**不是作者官方仓库**。
 
-Title: 3D Question Answering via only 2D Vision-Language Models  [PDF](TODO)
+- **日常实验与两台服务器配置：** [docs/SERVERS.md](docs/SERVERS.md)
+- **项目约定：** [AGENTS.md](AGENTS.md)
+- **论文原文：** [docs/cdviews.pdf](docs/cdviews.pdf)
+- **代码与论文笔记：** [docs/CODE_PAPER_GUIDE_CN.md](docs/CODE_PAPER_GUIDE_CN.md)
+- **历史环境安装记录：** [docs/setup/REPRODUCE_A6000_CN.md](docs/setup/REPRODUCE_A6000_CN.md)
+
+两台服务器均默认单卡、只评测 ScanQA `val`。源代码入口 `run_scanqa.py` 会按当前机器的数据目录生成配置；模型、数据、环境、输出通过各机器本地文件管理，不进入 Git。
+
+```bash
+# Bash；实验室用 lab，并将 0 改成实际空闲 GPU 编号
+source scripts/activate.sh cloud 0
+python run_scanqa.py --stage smoke --run-dir "$CDV_RUNS/baseline_v1"
+```
+
+下面保留作者原始说明作为方法和依赖参考，其中测试集及训练命令不代表本项目当前运行方案。
+
+## Original project
+
+The upstream repository provides the PyTorch implementation of the following paper:
+
+Title: 3D Question Answering via only 2D Vision-Language Models  [PDF](docs/cdviews.pdf)
 
 Author: [Fengyun Wang](https://scholar.google.com/citations?user=y1--5LMAAAAJ&hl=en), [Sicheng Yu](https://scholar.google.com/citations?hl=en&user=seCkFT8AAAAJ&view_op=list_works&sortby=pubdate), [Jiawei Wu](https://scholar.google.com/citations?hl=en&user=ZEK5VeUAAAAJ&view_op=list_works&sortby=pubdate), [Jinhui Tang](https://scholar.google.com/citations?user=ByBLlEwAAAAJ&hl=zh-CN), [Hanwang Zhang](https://personal.ntu.edu.sg/hanwangzhang/),  [Qianru Sun](https://qianrusun.com/)
 

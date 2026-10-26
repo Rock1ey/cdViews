@@ -1,0 +1,52 @@
+# Machine-local files and secrets
+.DS_Store
+.env
+.env.*
+!.env.example
+*.local.sh
+*.local.yaml
+*.local.yml
+.local-archive/
+
+# Python / tooling
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+envs/
+build/
+dist/
+.cache/
+
+# Data, model downloads, caches and generated experiment artifacts
+/data/
+/datasets/
+/model/
+/models/
+/hf_cache/
+/downloads/
+/bundles/
+/output/
+/outputs/
+/tmp/
+/runs/
+/checkpoints/
+/wandb/
+*.safetensors
+*.pth
+*.pt
+*.ckpt
+*.whl
+*.incomplete
+*.aria2
+.rsync-partial/
+*.log
+
+# Original training scripts may write these to the repository root
+/ScanQA_*_answers.json
+/ScanQA_*_view_ranking.json*
+/ScanQA_view_labeling.json
+/ScanQA_QA_captions.json
+/model_epoch_*.pth

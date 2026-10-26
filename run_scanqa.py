@@ -1,0 +1,215 @@
+"""Run ScanQA validation on one GPU by default, then validate and merge answers.
+
+Use --stage smoke before --stage full. Each stage needs a new output directory;
+the upstream inference script saves only at the end of each split, not per question.
+"""
+
+import argparse
+import copy
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+import yaml
+
+
+SPLITS = ("test_w_obj", "test_wo_obj")
+
+
+def read_json(path):
+    return json.loads(path.read_text())
+
+
+def write_json(path, value):
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+
+
+def merge_answers(stage_dir, datasets, subsets, gpus):
+    for split in datasets:
+        by_id = {}
+        expected_ids = set()
+        for gpu in gpus:
+            rows = subsets[gpu][split]
+            expected = {str(row["question_id"]): row["scene_id"] for row in rows}
+            answers = read_json(stage_dir / f"gpu{gpu}" / f"ScanQA_{split}_answers.json")
+            found = set()
+            for answer in answers:
+                qid = str(answer["question_id"])
+                if qid in found or qid in by_id:
+                    raise ValueError(f"Duplicate answer: {split}/{qid}")
+                if qid not in expected or answer["scene_id"] != expected[qid]:
+                    raise ValueError(f"Unexpected question or scene: {split}/{qid}")
+                if not isinstance(answer.get("answer_top10"), list) or not answer["answer_top10"]:
+                    raise ValueError(f"Missing answer list: {split}/{qid}")
+                found.add(qid)
+                by_id[qid] = answer
+            if found != set(expected):
+                raise ValueError(f"Incomplete answers: GPU {gpu}, {split}, {len(found)}/{len(expected)}")
+            expected_ids.update(expected)
+        merged = [by_id[str(row["question_id"])] for row in datasets[split]
+                  if str(row["question_id"]) in expected_ids]
+        output = stage_dir / f"ScanQA_{split}_answers.json"
+        write_json(output, merged)
+        print(f"[PASS] {split}: merged {len(merged)} answers -> {output}", flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parent)
+    parser.add_argument("--data-root", type=Path,
+                        default=Path(os.environ["CDV_DATA"]) if os.environ.get("CDV_DATA") else None)
+    parser.add_argument("--run-dir", type=Path, required=True)
+    parser.add_argument("--stage", choices=("smoke", "full"), required=True)
+    parser.add_argument("--gpus", nargs="+", default=[os.environ.get("CDV_GPU", "0")],
+                        help="Defaults to one GPU: CDV_GPU or 0; explicitly pass two IDs only when needed")
+    parser.add_argument("--splits", nargs="+", choices=("val", *SPLITS), default=["val"],
+                        help="Default: val (the project's evaluation split)")
+    args = parser.parse_args()
+    if args.data_root is None:
+        parser.error("Set CDV_DATA (source scripts/activate.sh lab|cloud) or pass --data-root")
+    if not 1 <= len(args.gpus) <= 2 or len(set(args.gpus)) != len(args.gpus):
+        parser.error("Choose one GPU identifier or two different GPU identifiers")
+    if len(set(args.splits)) != len(args.splits):
+        parser.error("Do not repeat split names")
+
+    repo = args.repo.resolve()
+    root = args.data_root.resolve()
+    stage_dir = args.run_dir.resolve() / args.stage
+    entry = repo / "cdviews/qa_inference.py"
+    if not entry.is_file():
+        raise FileNotFoundError(f"Not a cdViews repository: {repo}")
+    base = yaml.safe_load((repo / "cfgs/QA.yaml").read_text())
+    annotations = root / "ScanQA/ScanQA_v1.0"
+    datasets = {split: read_json(annotations / f"ScanQA_v1.0_{split}.json") for split in args.splits}
+
+    # The upstream script hardcodes the test splits. For validation, create an
+    # inspectable copy changing only that selection; leave the original untouched.
+    selected_source = None
+    if args.splits != list(SPLITS):
+        source = entry.read_text()
+        original = "test_mode = ['test_w_obj', 'test_wo_obj'] if args.dataset == 'ScanQA' else ['test', ]"
+        if source.count(original) != 1:
+            raise ValueError("The upstream split-selection line changed; inspect qa_inference.py before adapting it")
+        selected_source = source.replace(original, f"test_mode = {args.splits!r}")
+
+    # Verify rankings before launching: a missing file would trigger feature extraction inputs.
+    for split, rows in datasets.items():
+        ids = [str(row["question_id"]) for row in rows]
+        if len(ids) != len(set(ids)):
+            raise ValueError(f"Duplicate question IDs: {split}")
+        ranking = read_json(root / f"ScanQA_{split}_view_ranking.json")
+        for qid in ids:
+            frames = ranking.get(qid)
+            if not isinstance(frames, list) or not frames or not all(isinstance(x, str) for x in frames):
+                raise ValueError(f"Missing/invalid flat ranking: {split}/{qid}")
+
+    # Keep the original question order within each disjoint shard.
+    subsets = {}
+    for worker, gpu in enumerate(args.gpus):
+        subsets[gpu] = {}
+        for split, rows in datasets.items():
+            shard = rows[worker::len(args.gpus)]
+            subsets[gpu][split] = shard[:2] if args.stage == "smoke" else shard
+
+    # Refuse to overwrite an earlier run, including a partially completed one.
+    stage_dir.mkdir(parents=True, exist_ok=False)
+    if selected_source is not None:
+        entry = stage_dir / "qa_inference_selected_splits.py"
+        entry.write_text(selected_source)
+    jobs = []
+    for gpu in args.gpus:
+        worker_dir = stage_dir / f"gpu{gpu}"
+        worker_dir.mkdir()
+        distance_dir = worker_dir / "view_distance"
+        distance_dir.mkdir()
+        cfg = copy.deepcopy(base)
+        cfg["ScanQA_file"] = {
+            split: str(annotations / f"ScanQA_v1.0_{split}.json")
+            for split in ("train", "val", *SPLITS)
+        }
+        for split, rows in subsets[gpu].items():
+            path = worker_dir / f"ScanQA_v1.0_{split}.json"
+            write_json(path, rows)
+            cfg["ScanQA_file"][split] = str(path)
+        cfg.update({
+            "dataset": "ScanQA",
+            "input_views": 9,
+            "batch_size": 1,
+            "temperature": 0.2,
+            "top_p": None,
+            "num_beams": 1,
+            "image_folder": str(root / "scannetv2/frames_square"),
+            "feature_folder": str(root / "scannetv2/llava_ov_feats"),
+            "view_distance_folder": str(distance_dir),
+            "LVLM_ckpt": str(root / "model/llava-onevision-qwen2-7b-ov"),
+            "pretrained_view_selector_ckpt": str(root / "model/{}_view_selector.pth"),
+            "ranked_view_file": str(root / "{}_{}_view_ranking.json"),
+            "answers_file": str(worker_dir / "{}_{}_answers.json"),
+            "view_labeling_file": str(root / "{}_view_labeling.json"),
+            "caption_file": str(root / "{}_QA_captions.json"),
+            "work_dir": str(worker_dir),
+        })
+        config_path = worker_dir / "QA.yaml"
+        config_path.write_text(yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False))
+        env = os.environ.copy()
+        env.update({
+            "PYTHONPATH": os.pathsep.join(filter(None, [str(repo / "cdviews"), str(repo), env.get("PYTHONPATH")])),
+            "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+            "CUDA_VISIBLE_DEVICES": gpu,
+            "HF_HOME": str(root / "hf_cache"),
+            "HF_HUB_CACHE": str(root / "hf_cache/hub"),
+            "HUGGINGFACE_HUB_CACHE": str(root / "hf_cache/hub"),
+            "HF_HUB_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+            "TOKENIZERS_PARALLELISM": "false",
+            "PYTHONUNBUFFERED": "1",
+        })
+        # Override an older Transformers cache setting if inherited from the shell.
+        env.pop("TRANSFORMERS_CACHE", None)
+        command = [sys.executable, "-u", str(entry), "--cfg_file", str(config_path)]
+        jobs.append((gpu, worker_dir, env, command))
+        counts = {split: len(rows) for split, rows in subsets[gpu].items()}
+        print(f"GPU {gpu}: {counts}; config: {config_path}", flush=True)
+
+    print("Sampling temperature=0.2; no claim of deterministic or paper-equivalent results.", flush=True)
+    processes = []
+    try:
+        for gpu, worker_dir, env, command in jobs:
+            log_path = worker_dir / "inference.log"
+            with log_path.open("w") as log:
+                process = subprocess.Popen(command, cwd=repo, env=env, stdout=log, stderr=subprocess.STDOUT)
+            processes.append((gpu, process))
+            print(f"GPU {gpu}: PID={process.pid}; log: {log_path}", flush=True)
+        pending = dict(processes)
+        while pending:
+            for gpu, process in list(pending.items()):
+                code = process.poll()
+                if code is not None:
+                    print(f"GPU {gpu}: exit={code}", flush=True)
+                    del pending[gpu]
+                    if code != 0:
+                        raise SystemExit(f"GPU {gpu} failed. Read {stage_dir}/gpu{gpu}/inference.log")
+            if pending:
+                time.sleep(1)
+    finally:
+        # On interruption, do not leave unnoticed GPU jobs running.
+        for _, process in processes:
+            if process.poll() is None:
+                process.terminate()
+        for _, process in processes:
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+    if any(process.returncode != 0 for _, process in processes):
+        raise SystemExit(f"Inference failed. Read {stage_dir}/gpu*/inference.log; outputs were not merged.")
+    merge_answers(stage_dir, datasets, subsets, args.gpus)
+
+
+if __name__ == "__main__":
+    main()
