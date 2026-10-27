@@ -50,3 +50,6 @@ dist/
 /ScanQA_view_labeling.json
 /ScanQA_QA_captions.json
 /model_epoch_*.pth
+
+# paper pdf
+*.pdf
