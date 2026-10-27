@@ -151,12 +151,14 @@ def eval_model(args):
 
     for mode in test_mode:
         save_rank_file = args.ranked_view_file.format(args.dataset, mode)
+        if args.view_selection == 'retrieval':
+            save_rank_file = args.retrieval_ranked_view_file.format(args.dataset, mode)
 
         # Cached full rankings also define the shared candidate pool for uniform
         # sampling. Loading them needs neither selector weights nor features.
         if not os.path.exists(save_rank_file):
-            if args.view_selection == 'uniform':
-                raise FileNotFoundError(f'Uniform sampling needs a shared candidate list: {save_rank_file}')
+            if args.view_selection in ('uniform', 'retrieval'):
+                raise FileNotFoundError(f'{args.view_selection} requires prepared rankings: {save_rank_file}')
             view_selector = ViewSelector().to(model.device)
             ckpt_file = args.pretrained_view_selector_ckpt.format(args.dataset)
             view_selector.load_state_dict(torch.load(ckpt_file)['model'])
@@ -185,6 +187,10 @@ def eval_model(args):
             if args.view_selection == 'uniform':
                 # No relevance weighting, no NMS and no camera-pose processing.
                 image_files = uniform_views(candidates, args.input_views, args.seed, mode, question_id)
+            elif args.view_selection == 'retrieval':
+                # BLIP ranking was computed in a separate process, without QA
+                # answers. Pure retrieval follows paper Table 2: top-k, no NMS.
+                image_files = candidates[:args.input_views]
             else:
                 os.makedirs(args.view_distance_folder, exist_ok=True)
                 view_distance_file = os.path.join(args.view_distance_folder, '{}.csv'.format(scene_id))
@@ -255,7 +261,7 @@ if __name__ == "__main__":
     parser.add_argument("--num-chunks", type=int, default=1)
     parser.add_argument("--chunk-idx", type=int, default=0)
     parser.add_argument("--temperature", type=float, default=0.2)
-    parser.add_argument("--view-selection", choices=("cdviews", "uniform"), default="cdviews")
+    parser.add_argument("--view-selection", choices=("cdviews", "uniform", "retrieval"), default="cdviews")
     parser.add_argument("--seed", type=int, default=None,
                         help="Launcher supplies a seed; None preserves legacy stochastic decoding")
     parser.add_argument("--top_p", type=float, default=None)

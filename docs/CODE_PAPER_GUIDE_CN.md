@@ -589,7 +589,7 @@ $$A=\operatorname{LVLM}(\mathcal M',Q).$$
 | 公式（1），第 4 页 | 选择子集 `F(M,Q,k)` | [qa_inference.py:87](../cdviews/qa_inference.py#L87)、[qa_inference.py:193](../cdviews/qa_inference.py#L193) | 排序与 NMS 组合；实际可能返回少于 k 张 |
 | 公式（2），第 4 页 | 所选视图与问题生成答案 | [qa_inference.py:212](../cdviews/qa_inference.py#L212) | 对应 `model.generate` |
 | 公式（3），第 4 页 | 均匀采样基线 | 当前核心目录未提供专用实验入口 | 训练集正负随机采样不是这一基线 |
-| 公式（4），第 4 页 | BLIP 图文检索基线 | 当前核心目录未提供 BLIP 检索实现 | 不能把选择器余弦相似度称为这里的 BLIP 基线 |
+| 公式（4），第 4 页 | BLIP 图文检索基线 | 上游未提供；本项目新增 `cdviews/blip_retrieval.py`，运行见 [检索说明](RETRIEVAL_BASELINE.md) | 使用独立 BLIP 权重，不是 viewSelector 的余弦相似度；具体公开 checkpoint 选择已单独记录 |
 | 公式（5），第 5 页 | QA→caption | [caption_generation.py:98](../cdviews/caption_generation.py#L98) | 为每个答案生成，匹配时只取第一条 |
 | 公式（6），第 6 页 | caption 与视图匹配标签 | [view_matching.py:110](../cdviews/view_matching.py#L110) | A/B/C 通过字符串包含关系解析 |
 | 公式（7），第 6 页 | 问题、视图向量的余弦分数 | [ViewSelector.py:332](../cdviews/ViewSelector.py#L332)、[qa_inference.py:106](../cdviews/qa_inference.py#L106) | 训练与推理均使用；训练后接 `(s+1)/2` |

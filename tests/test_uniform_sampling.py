@@ -79,6 +79,19 @@ class SamplingTests(unittest.TestCase):
             self.assertFalse(model.generate.call_args.kwargs["do_sample"])
             forbidden.assert_not_called()
 
+            # Retrieval must read its own BLIP order and bypass NMS as well.
+            blip_ranking = Path(tmp) / "blip.json"
+            blip_ranking.write_text(json.dumps({"q1": ["8.jpg", "3.jpg", "5.jpg"]}))
+            args.view_selection = "retrieval"
+            args.retrieval_ranked_view_file = str(blip_ranking)
+            args.answers_file = str(Path(tmp) / "retrieval_answers.json")
+            args.input_views = 2
+            with redirect_stdout(io.StringIO()):
+                namespace["eval_model"](args)
+            trace = json.loads(Path(args.answers_file + ".views.json").read_text())
+            self.assertEqual(trace["questions"][0]["images"], ["8.jpg", "3.jpg"])
+            forbidden.assert_not_called()
+
             # Cached cdViews still uses geometric NMS, without loading selector
             # weights or features merely to consume the same cached ranking.
             geometry = MagicMock()
@@ -113,6 +126,7 @@ class LauncherTests(unittest.TestCase):
         self.ranking = self.root / "ScanQA_val_view_ranking.json"
         self.ranking.write_text(json.dumps({r["question_id"]: [f"{i}.jpg" for i in range(20)]
                                             for r in self.rows}))
+        self.phases = []
 
     def launch(self, method="uniform", stage="smoke"):
         argv = ["run_scanqa.py", "--repo", str(REPO), "--data-root", str(self.root),
@@ -121,12 +135,20 @@ class LauncherTests(unittest.TestCase):
 
         def fake_process(command, **kwargs):
             cfg = run_scanqa.yaml.safe_load(Path(command[-1]).read_text())
+            self.phases.append(Path(command[2]).name)
             rows = json.loads(Path(cfg["ScanQA_file"]["val"]).read_text())
+            if Path(command[2]).name == "blip_retrieval.py":
+                candidates = run_scanqa.read_json(Path(cfg["ranked_view_file"].format("ScanQA", "val")))
+                run_scanqa.write_json(Path(cfg["retrieval_ranked_view_file"].format("ScanQA", "val")),
+                                     {qid: frames[::-1] for qid, frames in candidates.items()})
+                return SimpleNamespace(pid=1, poll=lambda: 0, wait=lambda timeout: 0, returncode=0)
+            if method == "retrieval":
+                self.assertTrue(Path(cfg["retrieval_ranked_view_file"].format("ScanQA", "val")).is_file())
             output = Path(cfg["answers_file"].format("ScanQA", "val"))
             run_scanqa.write_json(output, [dict(scene_id=r["scene_id"], question_id=r["question_id"],
                                                 answer_top10=["chair"] * 10) for r in rows])
             run_scanqa.write_json(Path(str(output) + ".views.json"), dict(
-                method=method, seed=42, input_views=9, split="val",
+                method=method, seed=42, input_views=cfg["input_views"], split="val",
                 questions=[dict(question_id=r["question_id"], scene_id=r["scene_id"],
                                 candidate_count=20, images=["0.jpg"]) for r in rows]))
             return SimpleNamespace(pid=1, poll=lambda: 0, wait=lambda timeout: 0, returncode=0)
@@ -156,6 +178,23 @@ class LauncherTests(unittest.TestCase):
         stage = self.launch(method="cdviews")
         self.assertEqual(run_scanqa.read_json(stage / "experiment.json")["method"], "cdviews")
         self.assertEqual(len(run_scanqa.read_json(stage / "ScanQA_val_answers.json")), 2)
+
+    def test_retrieval_runs_before_qa_and_defaults_to_17(self):
+        model_dir = self.root / "model/blip-itm-large-coco"
+        model_dir.mkdir(parents=True)
+        for name in ("pytorch_model.bin", "config.json", "preprocessor_config.json",
+                     "tokenizer_config.json", "special_tokens_map.json", "vocab.txt"):
+            (model_dir / name).touch()
+        stage = self.launch(method="retrieval")
+        self.assertEqual(self.phases, ["blip_retrieval.py", "qa_inference_selected_splits.py"])
+        cfg = run_scanqa.yaml.safe_load((stage / "gpu3/QA.yaml").read_text())
+        self.assertEqual(cfg["input_views"], 17)
+        self.assertEqual(cfg["inference_splits"], ["val"])
+
+    def test_retrieval_requires_weights_before_creating_run(self):
+        with self.assertRaisesRegex(FileNotFoundError, "download_blip"):
+            self.launch(method="retrieval")
+        self.assertFalse((self.root / "retrieval/smoke").exists())
 
     def test_rejects_duplicate_candidates(self):
         ranking = run_scanqa.read_json(self.ranking)
