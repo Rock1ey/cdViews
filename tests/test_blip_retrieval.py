@@ -3,17 +3,22 @@
 from contextlib import redirect_stdout
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 import torch
+import yaml
 from PIL import Image
 from transformers import (BertTokenizer, BlipConfig, BlipForImageTextRetrieval,
                           BlipImageProcessor, BlipProcessor)
 
 from cdviews.blip_retrieval import encode_images, encode_questions, rank_candidates, run_retrieval
+from cdviews.soft_view_preparation import prepare_soft_views
 
 
 def tiny_model():
@@ -96,6 +101,58 @@ class RetrievalTests(unittest.TestCase):
                  redirect_stdout(io.StringIO()):
                 run_retrieval(cfg)
             self.assertEqual(first, json.loads((root / "rank2.json").read_text()))
+
+            # Soft selection must reuse the retrieval image cache, retain the
+            # author's per-question order as its prior, and never encode text.
+            import numpy as np
+            poses = root / "images/scene/pose"
+            poses.mkdir()
+            for index, name in enumerate(("a", "b", "c")):
+                pose = np.eye(4)
+                pose[0, 3] = index * 0.2
+                np.savetxt(poses / f"{name}.txt", pose, delimiter=" ")
+            cfg.update(soft_selected_view_file=str(root / "soft1.json"), input_views=2,
+                       view_distance_folder=str(root / "distances"),
+                       soft_penalty=0.5, soft_rank_scale=10., soft_pose_scale=0.5)
+            with patch("torch.cuda.is_available", return_value=False), \
+                 patch("cdviews.blip_retrieval.encode_images", side_effect=AssertionError("cache missed")), \
+                 patch("cdviews.blip_retrieval.encode_questions", side_effect=AssertionError("text used")), \
+                 redirect_stdout(io.StringIO()):
+                prepare_soft_views(cfg)
+            soft = json.loads((root / "soft1.json").read_text())
+            self.assertEqual(soft["q1"][0], "c.jpg")
+            self.assertEqual(soft["q2"][0], "b.jpg")
+            self.assertEqual(len(set(soft["q1"])), 2)
+            self.assertEqual(set(soft["q2"]), {"a.jpg", "b.jpg"})
+            self.assertEqual(len(list((root / "cache").glob("*.pt"))), 1)
+            meta = json.loads((root / "soft1.json.metadata.json").read_text())
+            self.assertFalse(meta["answers_used"])
+            self.assertFalse(meta["hard_nms"])
+            self.assertEqual(meta["model_signature"], metadata["model_signature"])
+            for row in rows:
+                row["answers"] = ["DIFFERENT AGAIN"]
+            annotation.write_text(json.dumps(rows))
+            cfg["soft_selected_view_file"] = str(root / "soft2.json")
+            # Exercise the standalone snapshot imports used by the launcher,
+            # not only the package-import path used by this test process.
+            snapshot = root / "snapshot"
+            snapshot.mkdir()
+            source = Path(__file__).resolve().parents[1] / "cdviews"
+            for name in ("soft_view_preparation.py", "soft_selection.py", "blip_retrieval.py",
+                         "view_distance_calculation.py", "qa_utils.py"):
+                (snapshot / name).write_bytes((source / name).read_bytes())
+            config = snapshot / "QA.yaml"
+            config.write_text(yaml.safe_dump(cfg))
+            result = subprocess.run(
+                [sys.executable, str(snapshot / "soft_view_preparation.py"), "--cfg_file", str(config)],
+                env=dict(os.environ, CUDA_VISIBLE_DEVICES="", HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1"),
+                capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(soft, json.loads((root / "soft2.json").read_text()))
+            self.assertTrue((root / "soft2.json.trace.json").is_file())
+            self.assertEqual(len(list((root / "cache").glob("*.pt"))), 1)
+            with self.assertRaises(FileExistsError):
+                prepare_soft_views(cfg)
 
 
 if __name__ == "__main__":

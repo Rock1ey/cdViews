@@ -4,6 +4,7 @@
 - **日常实验与两台服务器配置：** [docs/SERVERS.md](docs/SERVERS.md)
 - **随机均匀采样对照与命令：** [docs/UNIFORM_BASELINE.md](docs/UNIFORM_BASELINE.md)
 - **BLIP 图文检索与权重下载：** [docs/RETRIEVAL_BASELINE.md](docs/RETRIEVAL_BASELINE.md)
+- **内容与位姿软去重实验（无需训练）：** [docs/SOFT_SELECTION.md](docs/SOFT_SELECTION.md)
 - **项目约定：** [AGENTS.md](AGENTS.md)
 - **论文原文：** [docs/cdviews.pdf](docs/cdviews.pdf)
 - **代码与论文笔记：** [docs/CODE_PAPER_GUIDE_CN.md](docs/CODE_PAPER_GUIDE_CN.md)

@@ -5,7 +5,10 @@ from scipy.spatial.transform import Rotation as R
 from collections import defaultdict
 import pandas as pd
 import argparse
-from qa_utils import load_and_update
+if __package__:
+    from .qa_utils import load_and_update
+else:
+    from qa_utils import load_and_update
 
 
 def extract_camera_pose(pose_matrix, return_orientation=False):

@@ -92,6 +92,27 @@ class SamplingTests(unittest.TestCase):
             self.assertEqual(trace["questions"][0]["images"], ["8.jpg", "3.jpg"])
             forbidden.assert_not_called()
 
+            # Soft selection is consumed unchanged, without a second NMS. All
+            # images must enter one generation call, not one call per view.
+            soft_file = Path(tmp) / "soft.json"
+            soft_file.write_text(json.dumps({"q1": ["0.jpg", "9.jpg", "4.jpg"]}))
+            args.view_selection = "soft"
+            args.soft_selected_view_file = str(soft_file)
+            args.answers_file = str(Path(tmp) / "soft_answers.json")
+            args.input_views = 3
+            model.generate.reset_mock()
+            with redirect_stdout(io.StringIO()):
+                namespace["eval_model"](args)
+            trace = json.loads(Path(args.answers_file + ".views.json").read_text())
+            self.assertEqual(trace["questions"][0]["images"], ["0.jpg", "9.jpg", "4.jpg"])
+            model.generate.assert_called_once()
+            self.assertEqual(len(model.generate.call_args.kwargs["images"]), 3)
+            self.assertEqual(trace["questions"][0]["candidate_count"], 20)
+            forbidden.assert_not_called()
+            soft_file.write_text(json.dumps({"q1": ["0.jpg", "0.jpg", "4.jpg"]}))
+            with self.assertRaisesRegex(ValueError, "Invalid soft selection"), redirect_stdout(io.StringIO()):
+                namespace["eval_model"](args)
+
             # Cached cdViews still uses geometric NMS, without loading selector
             # weights or features merely to consume the same cached ranking.
             geometry = MagicMock()
@@ -142,8 +163,15 @@ class LauncherTests(unittest.TestCase):
                 run_scanqa.write_json(Path(cfg["retrieval_ranked_view_file"].format("ScanQA", "val")),
                                      {qid: frames[::-1] for qid, frames in candidates.items()})
                 return SimpleNamespace(pid=1, poll=lambda: 0, wait=lambda timeout: 0, returncode=0)
+            if Path(command[2]).name == "soft_view_preparation.py":
+                candidates = run_scanqa.read_json(Path(cfg["ranked_view_file"].format("ScanQA", "val")))
+                run_scanqa.write_json(Path(cfg["soft_selected_view_file"].format("ScanQA", "val")),
+                                     {qid: frames[:cfg["input_views"]] for qid, frames in candidates.items()})
+                return SimpleNamespace(pid=1, poll=lambda: 0, wait=lambda timeout: 0, returncode=0)
             if method == "retrieval":
                 self.assertTrue(Path(cfg["retrieval_ranked_view_file"].format("ScanQA", "val")).is_file())
+            if method == "soft":
+                self.assertTrue(Path(cfg["soft_selected_view_file"].format("ScanQA", "val")).is_file())
             output = Path(cfg["answers_file"].format("ScanQA", "val"))
             run_scanqa.write_json(output, [dict(scene_id=r["scene_id"], question_id=r["question_id"],
                                                 answer_top10=["chair"] * 10) for r in rows])
@@ -195,6 +223,23 @@ class LauncherTests(unittest.TestCase):
         with self.assertRaisesRegex(FileNotFoundError, "download_blip"):
             self.launch(method="retrieval")
         self.assertFalse((self.root / "retrieval/smoke").exists())
+
+    def test_soft_runs_before_qa_and_preserves_source_ranking(self):
+        model_dir = self.root / "model/blip-itm-large-coco"
+        model_dir.mkdir(parents=True)
+        for name in ("pytorch_model.bin", "config.json", "preprocessor_config.json",
+                     "tokenizer_config.json", "special_tokens_map.json", "vocab.txt"):
+            (model_dir / name).touch()
+        original = self.ranking.read_bytes()
+        stage = self.launch(method="soft")
+        self.assertEqual(self.phases, ["soft_view_preparation.py", "qa_inference_selected_splits.py"])
+        cfg = run_scanqa.yaml.safe_load((stage / "gpu3/QA.yaml").read_text())
+        self.assertEqual((cfg["input_views"], cfg["soft_penalty"], cfg["soft_rank_scale"], cfg["soft_pose_scale"]),
+                         (9, 0.5, 10, 0.5))
+        self.assertEqual(self.ranking.read_bytes(), original)
+        self.assertEqual((stage / "blip_retrieval.py").read_bytes(), (REPO / "cdviews/blip_retrieval.py").read_bytes())
+        self.assertTrue((stage / "soft_selection.py").is_file())
+        self.assertFalse(run_scanqa.read_json(stage / "experiment.json")["soft"]["hard_nms"])
 
     def test_rejects_duplicate_candidates(self):
         ranking = run_scanqa.read_json(self.ranking)
