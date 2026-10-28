@@ -157,7 +157,7 @@ def eval_model(args):
         # Cached full rankings also define the shared candidate pool for uniform
         # sampling. Loading them needs neither selector weights nor features.
         if not os.path.exists(save_rank_file):
-            if args.view_selection in ('uniform', 'retrieval', 'soft'):
+            if args.view_selection in ('uniform', 'retrieval', 'soft', 'coverage'):
                 raise FileNotFoundError(f'{args.view_selection} requires prepared rankings: {save_rank_file}')
             view_selector = ViewSelector().to(model.device)
             ckpt_file = args.pretrained_view_selector_ckpt.format(args.dataset)
@@ -169,7 +169,7 @@ def eval_model(args):
 
         with open(save_rank_file) as stream:
             image_file_list = json.load(stream)
-        if args.view_selection == 'soft':
+        if args.view_selection in ('soft', 'coverage'):
             with open(args.soft_selected_view_file.format(args.dataset, mode)) as stream:
                 soft_selected = json.load(stream)
         answers = []
@@ -194,7 +194,7 @@ def eval_model(args):
                 # BLIP ranking was computed in a separate process, without QA
                 # answers. Pure retrieval follows paper Table 2: top-k, no NMS.
                 image_files = candidates[:args.input_views]
-            elif args.view_selection == 'soft':
+            elif args.view_selection in ('soft', 'coverage'):
                 # Prepared before loading LLaVA. Preserve greedy selection order;
                 # do not apply geometric NMS a second time.
                 image_files = soft_selected[question_id]
@@ -272,7 +272,7 @@ if __name__ == "__main__":
     parser.add_argument("--num-chunks", type=int, default=1)
     parser.add_argument("--chunk-idx", type=int, default=0)
     parser.add_argument("--temperature", type=float, default=0.2)
-    parser.add_argument("--view-selection", choices=("cdviews", "uniform", "retrieval", "soft"), default="cdviews")
+    parser.add_argument("--view-selection", choices=("cdviews", "uniform", "retrieval", "soft", "coverage"), default="cdviews")
     parser.add_argument("--seed", type=int, default=None,
                         help="Launcher supplies a seed; None preserves legacy stochastic decoding")
     parser.add_argument("--top_p", type=float, default=None)

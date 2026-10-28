@@ -56,11 +56,12 @@ python -u run_scanqa.py --run-dir "$CDV_EXPERIMENT" --stage full
 
 `run_scanqa_dual_gpu.py` 仅作为旧命令兼容入口保留，默认行为与 `run_scanqa.py` 一致。不要使用原始 `qa_inference.py` 的默认测试集入口。
 
-当前入口支持 `--view-selection cdviews|uniform|retrieval|soft`、`--input-views`、`--seed`、`--temperature`。
+当前入口支持 `--view-selection cdviews|uniform|retrieval|soft|coverage`、`--input-views`、`--seed`、`--temperature`。
 默认 cdviews、9 张、seed=42、temperature=0.2；旧入口未固定随机种子，因此历史采样输出不保证重现。
 随机均匀采样的完整命令和公平比较说明见 [UNIFORM_BASELINE.md](UNIFORM_BASELINE.md)。
 BLIP retrieval 默认 17 张、无 NMS，需要额外检索权重，下载和运行见 [RETRIEVAL_BASELINE.md](RETRIEVAL_BASELINE.md)。
 soft 默认 9 张，保留原 cdViews 排名先验、使用 BLIP 内容与位姿软去重，无需训练；见 [SOFT_SELECTION.md](SOFT_SELECTION.md)。
+coverage 在 soft 上加入问题加权的集合覆盖增益，默认 9 张、无需训练；见 [COVERAGE_SELECTION.md](COVERAGE_SELECTION.md)。
 
 修改 selector 后必须重新生成排序，不能继续把作者排序作为新模型结果。当前 launcher 读取 `$CDV_DATA/ScanQA_val_view_ranking.json`，并保存实验内候选副本；uniform 使用同一候选集合但忽略排名且关闭 NMS。做新的排序方法时仍需独立管理排序来源。训练脚本原始 `cfgs/QA.yaml` 中仍有旧绝对路径，必须创建适用于当前机器的实验配置后再运行，不要直接启动。
 

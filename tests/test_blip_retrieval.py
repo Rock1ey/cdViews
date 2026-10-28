@@ -154,6 +154,52 @@ class RetrievalTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 prepare_soft_views(cfg)
 
+            cfg.update(view_selection="coverage", coverage_weight=0.5,
+                       coverage_temperature=0.07, coverage_text_weight=1.0,
+                       soft_selected_view_file=str(root / "coverage1.json"))
+            with patch("torch.cuda.is_available", return_value=False), \
+                 patch("cdviews.blip_retrieval.encode_images", side_effect=AssertionError("cache missed")), \
+                 patch("cdviews.blip_retrieval.encode_questions", wraps=encode_questions) as text_encoder, \
+                 redirect_stdout(io.StringIO()):
+                prepare_soft_views(cfg)
+            text_encoder.assert_called_once()
+            coverage = json.loads((root / "coverage1.json").read_text())
+            self.assertEqual(coverage["q1"][0], "c.jpg")
+            self.assertEqual(set(coverage["q2"]), {"a.jpg", "b.jpg"})
+            meta = json.loads((root / "coverage1.json.metadata.json").read_text())
+            self.assertEqual(meta["method"], "coverage")
+            self.assertEqual(meta["version"], 2)
+            self.assertTrue(meta["coverage"]["active"])
+            self.assertFalse(meta["answers_used"])
+            weights = json.loads((root / "coverage1.json.coverage.json").read_text())
+            for row in weights.values():
+                self.assertAlmostEqual(sum(row["weights"]), 1)
+
+            # Changed answers do not affect coverage, including standalone use.
+            for row in rows:
+                row["answers"] = ["NEVER READ THIS"]
+            annotation.write_text(json.dumps(rows))
+            cfg["soft_selected_view_file"] = str(root / "coverage2.json")
+            config.write_text(yaml.safe_dump(cfg))
+            result = subprocess.run(
+                [sys.executable, str(snapshot / "soft_view_preparation.py"), "--cfg_file", str(config)],
+                env=dict(os.environ, CUDA_VISIBLE_DEVICES="", HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1"),
+                capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(coverage, json.loads((root / "coverage2.json").read_text()))
+
+            # With the new term disabled, skip text/kernel work and reproduce
+            # v1 selected views AND per-step scores exactly.
+            cfg.update(coverage_weight=0., soft_selected_view_file=str(root / "coverage0.json"))
+            with patch("torch.cuda.is_available", return_value=False), \
+                 patch("cdviews.blip_retrieval.encode_questions", side_effect=AssertionError("text used")), \
+                 redirect_stdout(io.StringIO()):
+                prepare_soft_views(cfg)
+            self.assertEqual(soft, json.loads((root / "coverage0.json").read_text()))
+            self.assertEqual(json.loads((root / "soft1.json.trace.json").read_text()),
+                             json.loads((root / "coverage0.json.trace.json").read_text()))
+            self.assertEqual(len(list((root / "cache").glob("*.pt"))), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

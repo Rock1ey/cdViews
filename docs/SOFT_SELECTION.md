@@ -1,5 +1,8 @@
 # 第一个改进版本：内容与位姿软去重
 
+后续的集合感知互补版本使用独立的 `--view-selection coverage`，见 [COVERAGE_SELECTION.md](COVERAGE_SELECTION.md)。
+本页的 `soft` 算法和运行命令继续保留。
+
 入口为 `run_scanqa.py --view-selection soft`，仅支持 ScanQA `val`，默认单卡、9 张图。
 无需训练；保留原 cdViews 的问题相关排序，用 BLIP 图像内容和相机位姿重新选图。
 这是验证“硬去重可能误删有用视图”的初始实验，不代表已经提高了指标，也不宣称已实现跨图证据推理。

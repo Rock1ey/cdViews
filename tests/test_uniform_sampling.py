@@ -109,6 +109,16 @@ class SamplingTests(unittest.TestCase):
             self.assertEqual(len(model.generate.call_args.kwargs["images"]), 3)
             self.assertEqual(trace["questions"][0]["candidate_count"], 20)
             forbidden.assert_not_called()
+            args.view_selection = "coverage"
+            model.generate.reset_mock()
+            with redirect_stdout(io.StringIO()):
+                namespace["eval_model"](args)
+            trace = json.loads(Path(args.answers_file + ".views.json").read_text())
+            self.assertEqual(trace["method"], "coverage")
+            self.assertEqual(trace["questions"][0]["images"], ["0.jpg", "9.jpg", "4.jpg"])
+            model.generate.assert_called_once()
+            self.assertEqual(len(model.generate.call_args.kwargs["images"]), 3)
+            forbidden.assert_not_called()
             soft_file.write_text(json.dumps({"q1": ["0.jpg", "0.jpg", "4.jpg"]}))
             with self.assertRaisesRegex(ValueError, "Invalid soft selection"), redirect_stdout(io.StringIO()):
                 namespace["eval_model"](args)
@@ -170,7 +180,7 @@ class LauncherTests(unittest.TestCase):
                 return SimpleNamespace(pid=1, poll=lambda: 0, wait=lambda timeout: 0, returncode=0)
             if method == "retrieval":
                 self.assertTrue(Path(cfg["retrieval_ranked_view_file"].format("ScanQA", "val")).is_file())
-            if method == "soft":
+            if method in ("soft", "coverage"):
                 self.assertTrue(Path(cfg["soft_selected_view_file"].format("ScanQA", "val")).is_file())
             output = Path(cfg["answers_file"].format("ScanQA", "val"))
             run_scanqa.write_json(output, [dict(scene_id=r["scene_id"], question_id=r["question_id"],
@@ -240,6 +250,24 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual((stage / "blip_retrieval.py").read_bytes(), (REPO / "cdviews/blip_retrieval.py").read_bytes())
         self.assertTrue((stage / "soft_selection.py").is_file())
         self.assertFalse(run_scanqa.read_json(stage / "experiment.json")["soft"]["hard_nms"])
+
+    def test_coverage_runs_before_qa_with_separate_output_and_parameters(self):
+        model_dir = self.root / "model/blip-itm-large-coco"
+        model_dir.mkdir(parents=True)
+        for name in ("pytorch_model.bin", "config.json", "preprocessor_config.json",
+                     "tokenizer_config.json", "special_tokens_map.json", "vocab.txt"):
+            (model_dir / name).touch()
+        stage = self.launch(method="coverage")
+        self.assertEqual(self.phases, ["soft_view_preparation.py", "qa_inference_selected_splits.py"])
+        cfg = run_scanqa.yaml.safe_load((stage / "gpu3/QA.yaml").read_text())
+        self.assertEqual(cfg["view_selection"], "coverage")
+        self.assertEqual(cfg["input_views"], 9)
+        self.assertTrue(cfg["soft_selected_view_file"].endswith("coverage_views.json"))
+        self.assertEqual((cfg["coverage_weight"], cfg["coverage_temperature"], cfg["coverage_text_weight"]),
+                         (0.5, 0.07, 1.0))
+        metadata = run_scanqa.read_json(stage / "experiment.json")
+        self.assertEqual(metadata["coverage"]["weight"], 0.5)
+        self.assertEqual(metadata["soft"]["penalty"], 0.5)
 
     def test_rejects_duplicate_candidates(self):
         ranking = run_scanqa.read_json(self.ranking)

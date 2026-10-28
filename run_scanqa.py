@@ -110,10 +110,10 @@ def main():
                         help="Defaults to one GPU: CDV_GPU or 0; explicitly pass two IDs only when needed")
     parser.add_argument("--splits", nargs="+", choices=("val", *SPLITS), default=["val"],
                         help="Default: val (the project's evaluation split)")
-    parser.add_argument("--view-selection", choices=("cdviews", "uniform", "retrieval", "soft"), default="cdviews",
-                        help="soft: cdViews rank prior with visual/pose redundancy penalties; no hard NMS")
+    parser.add_argument("--view-selection", choices=("cdviews", "uniform", "retrieval", "soft", "coverage"), default="cdviews",
+                        help="soft: visual/pose soft suppression; coverage: add question-weighted set coverage")
     parser.add_argument("--input-views", type=int, default=None,
-                        help="Default: 17 for retrieval, 9 for cdviews/uniform/soft")
+                        help="Default: 17 for retrieval, 9 for all other methods")
     parser.add_argument("--blip-model", type=Path, help="Local Salesforce/blip-itm-large-coco directory")
     parser.add_argument("--retrieval-batch-size", type=int, default=8,
                         help="BLIP encoding batch size; does not change the QA view budget")
@@ -123,6 +123,12 @@ def main():
                         help="Rank prior: 1 / (1 + zero-based rank / scale)")
     parser.add_argument("--soft-pose-scale", type=float, default=0.5,
                         help="Scale in exp(-camera distance / scale); same distance units as original NMS")
+    parser.add_argument("--coverage-weight", type=float, default=0.5,
+                        help="Marginal set coverage bonus; 0 exactly recovers soft selection")
+    parser.add_argument("--coverage-temperature", type=float, default=0.07,
+                        help="BLIP cosine temperature for coverage weights, not QA decoding temperature")
+    parser.add_argument("--coverage-text-weight", type=float, default=1.0,
+                        help="Question contribution in [0,1]; 0 gives rank-only set coverage")
     parser.add_argument("--seed", type=int, default=42,
                         help="Stable per-question view sampling and decoding seed")
     parser.add_argument("--temperature", type=float, default=0.2,
@@ -143,9 +149,13 @@ def main():
     if (not all(math.isfinite(x) for x in (args.soft_penalty, args.soft_rank_scale, args.soft_pose_scale))
             or args.soft_penalty < 0 or min(args.soft_rank_scale, args.soft_pose_scale) <= 0):
         parser.error("Soft penalty must be finite/nonnegative; rank/pose scales must be finite/positive")
-    uses_blip = args.view_selection in ("retrieval", "soft")
+    if (not all(math.isfinite(x) for x in (args.coverage_weight, args.coverage_temperature, args.coverage_text_weight))
+            or args.coverage_weight < 0 or args.coverage_temperature <= 0 or not 0 <= args.coverage_text_weight <= 1):
+        parser.error("Coverage weight must be nonnegative, temperature positive, text weight in [0,1]; all finite")
+    uses_soft = args.view_selection in ("soft", "coverage")
+    uses_blip = args.view_selection == "retrieval" or uses_soft
     if uses_blip and args.splits != ["val"]:
-        parser.error("Retrieval and soft selection support only --splits val")
+        parser.error("Retrieval, soft and coverage selection support only --splits val")
 
     repo = args.repo.resolve()
     root = args.data_root.resolve()
@@ -220,7 +230,7 @@ def main():
     if uses_blip:
         retrieval_entry.write_text((repo / "cdviews/blip_retrieval.py").read_text())
     soft_entry = stage_dir / "soft_view_preparation.py"
-    if args.view_selection == "soft":
+    if uses_soft:
         for name in ("soft_view_preparation.py", "soft_selection.py", "view_distance_calculation.py", "qa_utils.py"):
             (stage_dir / name).write_text((repo / "cdviews" / name).read_text())
     revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
@@ -246,7 +256,11 @@ def main():
         "soft": {"penalty": args.soft_penalty, "rank_scale": args.soft_rank_scale,
                  "pose_scale": args.soft_pose_scale, "blip_model": str(blip_model),
                  "relevance": "original cdViews rank prior, not raw selector scores", "hard_nms": False}
-                if args.view_selection == "soft" else None,
+                if uses_soft else None,
+        "coverage": {"weight": args.coverage_weight, "temperature": args.coverage_temperature,
+                     "text_weight": args.coverage_text_weight, "kernel": "clip(image_cosine,0,1)^4",
+                     "anchor": "original cdViews top-1"}
+                    if args.view_selection == "coverage" else None,
     })
     jobs = []
     for gpu in args.gpus:
@@ -282,10 +296,13 @@ def main():
             "pretrained_view_selector_ckpt": str(root / "model/{}_view_selector.pth"),
             "ranked_view_file": str(worker_dir / "{}_{}_view_ranking.json"),
             "retrieval_ranked_view_file": str(worker_dir / "{}_{}_blip_ranking.json"),
-            "soft_selected_view_file": str(worker_dir / "{}_{}_soft_views.json"),
+            "soft_selected_view_file": str(worker_dir / ("{}_{}_" + args.view_selection + "_views.json")),
             "soft_penalty": args.soft_penalty,
             "soft_rank_scale": args.soft_rank_scale,
             "soft_pose_scale": args.soft_pose_scale,
+            "coverage_weight": args.coverage_weight,
+            "coverage_temperature": args.coverage_temperature,
+            "coverage_text_weight": args.coverage_text_weight,
             "blip_model": str(blip_model),
             "retrieval_batch_size": args.retrieval_batch_size,
             "retrieval_cache_folder": str(root / "scannetv2/blip_itc_cache"),
@@ -323,7 +340,7 @@ def main():
                            [sys.executable, "-u", str(retrieval_entry), "--cfg_file", str(worker_dir / "QA.yaml")])
                           for gpu, worker_dir, env, _ in jobs]
         run_jobs(retrieval_jobs, repo, "retrieval.log")
-    elif args.view_selection == "soft":
+    elif uses_soft:
         soft_jobs = [(gpu, worker_dir, env,
                       [sys.executable, "-u", str(soft_entry), "--cfg_file", str(worker_dir / "QA.yaml")])
                      for gpu, worker_dir, env, _ in jobs]
