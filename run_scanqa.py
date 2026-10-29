@@ -115,6 +115,8 @@ def main():
     parser.add_argument("--input-views", type=int, default=None,
                         help="Default: 17 for retrieval, 9 for all other methods")
     parser.add_argument("--blip-model", type=Path, help="Local Salesforce/blip-itm-large-coco directory")
+    parser.add_argument("--ranked-view-file", type=Path,
+                        help="Explicit val selector ranking; must cover the exact original candidate pool")
     parser.add_argument("--retrieval-batch-size", type=int, default=8,
                         help="BLIP encoding batch size; does not change the QA view budget")
     parser.add_argument("--soft-penalty", type=float, default=0.5,
@@ -156,6 +158,8 @@ def main():
     uses_blip = args.view_selection == "retrieval" or uses_soft
     if uses_blip and args.splits != ["val"]:
         parser.error("Retrieval, soft and coverage selection support only --splits val")
+    if args.ranked_view_file and args.splits != ["val"]:
+        parser.error("Explicit selector rankings support only --splits val")
 
     repo = args.repo.resolve()
     root = args.data_root.resolve()
@@ -186,6 +190,8 @@ def main():
     # Both methods use exactly the same candidate sets. Uniform ignores their
     # ranks, rather than sampling only the selector's top-k or NMS survivors.
     rankings = {}
+    ranking_paths = {}
+    selector_metadata = None
     image_names = {}
     for split, rows in datasets.items():
         if split == "val" and len(rows) != 4675:
@@ -195,7 +201,22 @@ def main():
         ids = [str(row["question_id"]) for row in rows]
         if len(ids) != len(set(ids)):
             raise ValueError(f"Duplicate question IDs: {split}")
-        ranking = read_json(root / f"ScanQA_{split}_view_ranking.json")
+        original_ranking_path = root / f"ScanQA_{split}_view_ranking.json"
+        ranking_path = args.ranked_view_file.resolve() if args.ranked_view_file else original_ranking_path
+        ranking = read_json(ranking_path)
+        if args.ranked_view_file:
+            original_ranking = read_json(original_ranking_path)
+            if set(ranking) != set(ids):
+                raise ValueError("Explicit selector ranking must cover exactly the full val question IDs")
+            for qid in ids:
+                if set(ranking[qid]) != set(original_ranking[qid]):
+                    raise ValueError(f"Changed candidate pool in selector ranking: {qid}")
+            metadata_path = Path(str(ranking_path) + ".metadata.json")
+            if metadata_path.exists():
+                selector_metadata = read_json(metadata_path)
+                if selector_metadata.get("ranking_sha256") != hashlib.sha256(ranking_path.read_bytes()).hexdigest():
+                    raise ValueError("Selector ranking metadata hash does not match the ranking file")
+        ranking_paths[split] = ranking_path
         rankings[split] = ranking
         for row, qid in zip(rows, ids):
             frames = ranking.get(qid)
@@ -240,9 +261,11 @@ def main():
     inputs = {}
     for split in args.splits:
         for name, path in [("annotations", annotations / f"ScanQA_v1.0_{split}.json"),
-                           ("candidates", root / f"ScanQA_{split}_view_ranking.json")]:
+                           ("candidates", ranking_paths[split])]:
             inputs[f"{split}_{name}"] = {"path": str(path),
                                           "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+    if selector_metadata is not None:
+        write_json(stage_dir / "selector_ranking.metadata.json", selector_metadata)
     write_json(stage_dir / "experiment.json", {
         "method": args.view_selection, "input_views": args.input_views,
         "seed": args.seed, "temperature": args.temperature, "splits": args.splits,
@@ -250,6 +273,7 @@ def main():
         "candidate_pool": "All entries in the supplied ranking, ignoring rank for uniform",
         "uniform_order": "Random draw order; sampling without replacement",
         "inputs": inputs,
+        "selector_ranking": selector_metadata,
         "retrieval": {"blip_model": str(blip_model), "batch_size": args.retrieval_batch_size,
                       "score": "projected CLS cosine", "nms": False}
                      if args.view_selection == "retrieval" else None,

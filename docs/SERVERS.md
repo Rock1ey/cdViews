@@ -62,6 +62,8 @@ python -u run_scanqa.py --run-dir "$CDV_EXPERIMENT" --stage full
 BLIP retrieval 默认 17 张、无 NMS，需要额外检索权重，下载和运行见 [RETRIEVAL_BASELINE.md](RETRIEVAL_BASELINE.md)。
 soft 默认 9 张，保留原 cdViews 排名先验、使用 BLIP 内容与位姿软去重，无需训练；见 [SOFT_SELECTION.md](SOFT_SELECTION.md)。
 coverage 在 soft 上加入问题加权的集合覆盖增益，默认 9 张、无需训练；见 [COVERAGE_SELECTION.md](COVERAGE_SELECTION.md)。
+R2 的冻结特征准备、双卡 DDP 训练、新排名和验证集评测见 [R2_TRAINING.md](R2_TRAINING.md)。
+这是用户明确要求的双卡实验，日常其他运行仍默认单卡；`--ranked-view-file` 可指定新 selector 排名。
 
 修改 selector 后必须重新生成排序，不能继续把作者排序作为新模型结果。当前 launcher 读取 `$CDV_DATA/ScanQA_val_view_ranking.json`，并保存实验内候选副本；uniform 使用同一候选集合但忽略排名且关闭 NMS。做新的排序方法时仍需独立管理排序来源。训练脚本原始 `cfgs/QA.yaml` 中仍有旧绝对路径，必须创建适用于当前机器的实验配置后再运行，不要直接启动。
 

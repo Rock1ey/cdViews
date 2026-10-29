@@ -3,6 +3,7 @@
 import ast
 from contextlib import nullcontext, redirect_stdout
 import io
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -159,10 +160,11 @@ class LauncherTests(unittest.TestCase):
                                             for r in self.rows}))
         self.phases = []
 
-    def launch(self, method="uniform", stage="smoke"):
+    def launch(self, method="uniform", stage="smoke", extra_args=()):
         argv = ["run_scanqa.py", "--repo", str(REPO), "--data-root", str(self.root),
                 "--run-dir", str(self.root / method), "--stage", stage,
                 "--view-selection", method, "--temperature", "0", "--seed", "42"]
+        argv += list(extra_args)
 
         def fake_process(command, **kwargs):
             cfg = run_scanqa.yaml.safe_load(Path(command[-1]).read_text())
@@ -216,6 +218,29 @@ class LauncherTests(unittest.TestCase):
         stage = self.launch(method="cdviews")
         self.assertEqual(run_scanqa.read_json(stage / "experiment.json")["method"], "cdviews")
         self.assertEqual(len(run_scanqa.read_json(stage / "ScanQA_val_answers.json")), 2)
+
+    def test_explicit_r2_ranking_is_snapshotted_with_provenance(self):
+        ranking = run_scanqa.read_json(self.ranking)
+        new_path = self.root / "r2.json"
+        run_scanqa.write_json(new_path, {qid: frames[::-1] for qid, frames in ranking.items()})
+        metadata = dict(architecture="r2_query_pool", checkpoint_sha256="fixture",
+                        ranking_sha256=hashlib.sha256(new_path.read_bytes()).hexdigest())
+        run_scanqa.write_json(Path(str(new_path) + ".metadata.json"), metadata)
+        stage = self.launch(method="cdviews", extra_args=["--ranked-view-file", str(new_path)])
+        cfg = run_scanqa.yaml.safe_load((stage / "gpu3/QA.yaml").read_text())
+        saved = run_scanqa.read_json(Path(cfg["ranked_view_file"].format("ScanQA", "val")))
+        self.assertEqual(saved["q0"], ranking["q0"][::-1])
+        self.assertEqual(run_scanqa.read_json(stage / "experiment.json")["selector_ranking"], metadata)
+        self.assertEqual(run_scanqa.read_json(self.ranking), ranking)
+
+    def test_explicit_ranking_cannot_change_candidate_pool(self):
+        ranking = run_scanqa.read_json(self.ranking)
+        ranking["q0"].pop()
+        new_path = self.root / "bad.json"
+        run_scanqa.write_json(new_path, ranking)
+        with self.assertRaisesRegex(ValueError, "candidate pool"):
+            self.launch(extra_args=["--ranked-view-file", str(new_path)])
+        self.assertFalse((self.root / "uniform/smoke").exists())
 
     def test_retrieval_runs_before_qa_and_defaults_to_17(self):
         model_dir = self.root / "model/blip-itm-large-coco"

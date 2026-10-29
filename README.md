@@ -6,6 +6,7 @@
 - **BLIP 图文检索与权重下载：** [docs/RETRIEVAL_BASELINE.md](docs/RETRIEVAL_BASELINE.md)
 - **内容与位姿软去重实验（无需训练）：** [docs/SOFT_SELECTION.md](docs/SOFT_SELECTION.md)
 - **集合感知互补选图实验（无需训练）：** [docs/COVERAGE_SELECTION.md](docs/COVERAGE_SELECTION.md)
+- **R2 多查询选择器（双卡训练、推理与评测）：** [docs/R2_TRAINING.md](docs/R2_TRAINING.md)
 - **项目约定：** [AGENTS.md](AGENTS.md)
 - **论文原文：** [docs/cdviews.pdf](docs/cdviews.pdf)
 - **代码与论文笔记：** [docs/CODE_PAPER_GUIDE_CN.md](docs/CODE_PAPER_GUIDE_CN.md)
