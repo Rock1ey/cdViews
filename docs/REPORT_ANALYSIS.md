@@ -13,6 +13,27 @@
 
 预测格式沿用本项目：列表，每项包含 `question_id`、`scene_id`、`answer_top10`。3D-VisTA 如已转换为本项目评测格式，可直接作为额外 `--run vista=...` 输入；没有二维选图记录也可以比较 EM。不要把汇总分数伪装成逐题预测。
 
+### 旧 cdViews 实验没有选图记录时
+
+当前记录后缀是 `.views.json`，不是 `.views.jsonl`。旧版本可能只有答案和候选排序，没有保存最终输入视图。这与“读取作者排序”并不矛盾：排序文件只给出候选顺序，实际输入还要经过 viewNMS，不能直接取前 9 张。
+
+在下一节完整命令中增加以下参数，且将输出目录改为新的目录，例如 `output/report_analysis_v2`：
+
+```bash
+  --cdviews-ranking "cdViews=$CDV_DATA/ScanQA_val_view_ranking.json" \
+  --view-distance-dir "$CDV_DATA/scannetv2/view_distance" \
+  --cdviews-input-views 9 \
+  --cdviews-nms-threshold 0.5
+```
+
+`cdViews` 必须与 `--run cdViews=...` 的名称一致。排序参数也支持原配置模板，例如 `--cdviews-ranking "cdViews=$CDV_DATA/{}_{}_view_ranking.json"`，只展开为 `ScanQA_val_view_ranking.json`。使用本次生成预测时的排序文件和距离矩阵；若 CSV 保存在实验的 `full/gpu0/view_distance`，将目录改为该处。该目录需覆盖本次完整验证集所有场景。脚本不生成新排序、不重新计算相机距离、不加载模型。
+
+恢复严格沿用原规则：选择当前排名第一的候选，移除与其距离 **小于 0.5** 的剩余候选，直到选满预算或候选耗尽；保持选取顺序。已有 `.views.json` 时优先使用原记录，忽略恢复入口。
+
+新增输出 `cdViews.reconstructed.views.json` 保存恢复结果，仅写入新的分析目录，不覆盖原预测。CSV、案例图和 `provenance.json` 将来源标为 `reconstructed_cdviews_nms`；这与历史实存的 `recorded` 记录有区别。保存排序、距离文件的路径与 SHA256，若预测同目录存在 `experiment.json`，还会校验方法、视图预算及已保存的排序文件指纹；不符则停止，避免把另一轮排序对应的视图配到旧答案上。
+
+原配置路径不等于作者来源证明：原入口会读取已有排序，缺失时也可生成同名文件；运行器还会把输入排序复制为各 GPU 的子集文件。若缺少历史指纹，只能在“排序、距离矩阵与配置均和当时一致”的前提下恢复，不能仅凭文件名确认来源。恢复入口仅对显式指定的方法生效，不能给 Soft、Coverage 或 3D 方法误套 cdViews 的 NMS。
+
 ## 2 一次生成统计和案例拼图
 
 在项目根目录和已有实验环境中运行。先把以下四个路径改为实际结果位置；`CDV_DATA` 沿用服务器配置。路径指向预测文件本身，不是实验目录。

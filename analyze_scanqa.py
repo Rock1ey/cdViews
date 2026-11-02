@@ -32,12 +32,72 @@ def question_type(question):
     return words[0] if words else "empty"
 
 
-def load_run(name, path, annotations, expected_questions=4675):
+def replay_view_nms(candidates, distances, budget, threshold):
+    """Mirror qa_inference.viewNMS, without importing the GPU inference stack."""
+    selected, remaining = [], candidates.copy()
+    while remaining and len(selected) < budget:
+        current = remaining.pop(0)
+        selected.append(current)
+        sorted_distances = distances.loc[current].sort_values()
+        suppressed = set(sorted_distances[sorted_distances < threshold].index.tolist())
+        remaining = [image for image in remaining if image not in suppressed]
+    return selected
+
+
+def reconstruct_cdviews(gold, predictions_path, ranking_path, distance_dir, budget, threshold):
+    import pandas as pd
+
+    ranking = json.loads(ranking_path.read_text())
+    ranking_hash = sha256(ranking_path)
+    experiment_path = predictions_path.parent / "experiment.json"
+    verified = False
+    if experiment_path.exists():
+        experiment = json.loads(experiment_path.read_text())
+        if experiment.get("method") != "cdviews" or experiment.get("input_views") != budget:
+            raise ValueError("cdViews reconstruction method/budget disagrees with experiment.json")
+        expected_hash = experiment.get("inputs", {}).get("val_candidates", {}).get("sha256")
+        if expected_hash and expected_hash != ranking_hash:
+            raise ValueError("Ranking SHA256 disagrees with the original experiment.json; use its original ranking")
+        verified = bool(expected_hash)
+    by_scene = {}
+    for row in gold:
+        by_scene.setdefault(row["scene_id"], []).append(row)
+    views, distance_sources = {}, {}
+    # Load one scene at a time; full scene distance matrices can be large.
+    for scene, questions in by_scene.items():
+        distance_path = distance_dir / f"{scene}.csv"
+        if not distance_path.exists():
+            raise FileNotFoundError(f"Missing original view-distance CSV: {distance_path}. "
+                                    "Set --view-distance-dir to the distance folder used for cdViews.")
+        distances = pd.read_csv(distance_path, index_col=0)
+        distance_sources[scene] = {"path": str(distance_path.resolve()), "sha256": sha256(distance_path)}
+        for row in questions:
+            qid = str(row["question_id"])
+            candidates = ranking.get(qid)
+            if not isinstance(candidates, list) or not candidates or len(set(candidates)) != len(candidates):
+                raise ValueError(f"Missing/empty/duplicate ranking candidates for {qid}")
+            if not set(candidates) <= set(distances.index) or not set(candidates) <= set(distances.columns):
+                raise ValueError(f"Distance matrix does not cover ranking candidates: {scene}/{qid}")
+            views[qid] = {"question_id": row["question_id"], "scene_id": scene,
+                          "candidate_count": len(candidates),
+                          "images": replay_view_nms(candidates, distances, budget, threshold)}
+    source = {"kind": "reconstructed_cdviews_nms", "ranking": str(ranking_path.resolve()),
+              "ranking_sha256": ranking_hash, "input_views": budget, "distance_threshold": threshold,
+              "ranking_hash_verified_against_experiment": verified,
+              "experiment_sha256": sha256(experiment_path) if experiment_path.exists() else None,
+              "distance_files": distance_sources,
+              "note": "Reconstruction, not a historical trace. Exact recovery requires the original ranking, distances, budget and NMS rule."}
+    return views, source
+
+
+def load_run(name, path, annotations, expected_questions=4675, *, ranking_path=None,
+             distance_dir=None, cdviews_budget=9, nms_threshold=0.5):
     gold, predictions = load_aligned(annotations, path)
     if len(gold) != expected_questions:
         raise ValueError(f"Expected {expected_questions} val questions, got {len(gold)}")
     views_path = Path(str(path) + ".views.json")
     views, budget = {}, None
+    source = {"kind": "unavailable"}
     if views_path.exists():
         trace = json.loads(views_path.read_text())
         if trace["split"] != "val":
@@ -51,12 +111,21 @@ def load_run(name, path, annotations, expected_questions=4675):
             if v["scene_id"] != row["scene_id"] or len(v["images"]) != len(set(v["images"])):
                 raise ValueError(f"Invalid scene or repeated image: {row['question_id']}")
         budget = trace["input_views"]
+        source = {"kind": "recorded", "path": str(views_path.resolve()), "sha256": sha256(views_path)}
+    elif ranking_path is not None:
+        if distance_dir is None:
+            raise ValueError("--view-distance-dir is required to reconstruct missing cdViews traces")
+        if cdviews_budget < 1 or not 0 <= nms_threshold < float("inf"):
+            raise ValueError("cdViews budget must be positive; NMS threshold must be finite and nonnegative")
+        views, source = reconstruct_cdviews(gold, path, ranking_path, distance_dir,
+                                            cdviews_budget, nms_threshold)
+        budget = cdviews_budget
     return {
         "name": name, "path": path, "predictions": predictions,
         "answers": [row["answer_top10"][0] for row in predictions],
         "hits": [pred["answer_top10"][0] in row["answers"]
                  for row, pred in zip(gold, predictions)],
-        "views": views, "budget": budget,
+        "views": views, "budget": budget, "view_source": source,
     }, gold
 
 
@@ -82,6 +151,8 @@ def compare(gold, before, after):
             "same_view_set": int(set(av) == set(bv)) if union is not None else "",
             "same_view_order": int(av == bv) if union is not None else "",
             "views_before": json.dumps(av), "views_after": json.dumps(bv),
+            "view_source_before": before["view_source"]["kind"],
+            "view_source_after": after["view_source"]["kind"],
         })
     counts = Counter(row["category"] for row in rows)
     summary = {"before": before["name"], "after": after["name"], "questions": len(rows),
@@ -124,6 +195,7 @@ def draw_case(row, frames_root, output, font_path=None):
     missing = []
     for side, images in (("before", a), ("after", b)):
         text_lines(f"{row[side]} | answer: {row['answer_' + side]} | EM: {row['correct_' + side]}")
+        text_lines("View source: " + row["view_source_" + side])
         if images is None:
             text_lines("No 2D view trace available for this method.")
             continue
@@ -157,13 +229,30 @@ def main():
     parser.add_argument("--font", type=Path, help="TrueType/OpenType font; default DejaVuSans.ttf")
     parser.add_argument("--cases-per-category", type=int, default=2)
     parser.add_argument("--question-id", action="append", help="Manual case IDs, replaces automatic candidates")
+    parser.add_argument("--cdviews-ranking", action="append", default=[], metavar="NAME=RANKING.json",
+                        help="Explicit fallback only for this run's missing view trace; replays cdViews NMS")
+    parser.add_argument("--view-distance-dir", type=Path, help="Original scene distance CSV directory")
+    parser.add_argument("--cdviews-input-views", type=int, default=9, help="Original budget for reconstructed runs")
+    parser.add_argument("--cdviews-nms-threshold", type=float, default=0.5)
     args = parser.parse_args()
+    fallbacks = {}
+    for spec in args.cdviews_ranking:
+        name, template = spec.split("=", 1)
+        if name in fallbacks:
+            parser.error(f"Duplicate cdViews fallback: {name}")
+        fallbacks[name] = Path(template.format("ScanQA", "val"))
     runs = {}
     for spec in args.run:
         name, path = spec.split("=", 1)
         if not re.fullmatch(r"[A-Za-z0-9_-]+", name) or name in runs:
             parser.error("Use unique run names with letters, digits, underscores or hyphens")
-        runs[name], gold = load_run(name, Path(path), args.annotations)
+        runs[name], gold = load_run(name, Path(path), args.annotations,
+                                   ranking_path=fallbacks.get(name), distance_dir=args.view_distance_dir,
+                                   cdviews_budget=args.cdviews_input_views,
+                                   nms_threshold=args.cdviews_nms_threshold)
+        print(f"{name}: view source = {runs[name]['view_source']['kind']}", flush=True)
+    if set(fallbacks) - set(runs):
+        parser.error("Each --cdviews-ranking NAME must match a --run NAME")
     names = list(runs)
     pairs = [pair.split(":") for pair in args.pair] if args.pair else [[names[0], n] for n in names[1:]]
     if not pairs or any(len(pair) != 2 or any(n not in runs for n in pair) for pair in pairs):
@@ -173,6 +262,12 @@ def main():
     if args.question_id and not set(args.question_id) <= {str(q["question_id"]) for q in gold}:
         parser.error("Unknown manual question ID")
     args.output_dir.mkdir(parents=True, exist_ok=False)
+    for name, run in runs.items():
+        if run["view_source"]["kind"] == "reconstructed_cdviews_nms":
+            trace = {"split": "val", "method": "cdviews", "input_views": run["budget"],
+                     "source": run["view_source"],
+                     "questions": [run["views"][str(q["question_id"])] for q in gold]}
+            (args.output_dir / f"{name}.reconstructed.views.json").write_text(json.dumps(trace, indent=2))
     summary, by_type, view_stats = [], [], []
     for name, run in runs.items():
         summary.append({"method": name, "questions": len(gold), "correct": sum(run["hits"]),
@@ -185,6 +280,7 @@ def main():
                             "correct": sum(hits), "EM@1": 100 * sum(hits) / len(hits)})
         views = list(run["views"].values())
         view_stats.append({"method": name, "view_trace_available": bool(views),
+                           "view_source": run["view_source"]["kind"],
                            "budget": run["budget"],
                            "mean_input_views": sum(len(v["images"]) for v in views) / len(views) if views else "",
                            "under_budget_questions": sum(len(v["images"]) < run["budget"] for v in views) if views else "",
@@ -223,7 +319,8 @@ def main():
                   "protocol": "raw exact membership, same as evaluate_scanqa.py; no caption metric recomputation",
                   "case_selection": "manual IDs" if args.question_id else "first IDs per transition category; inspect manually",
                   "runs": {n: {"predictions": str(r["path"].resolve()), "sha256": sha256(r["path"]),
-                                 "views_sha256": sha256(Path(str(r["path"]) + ".views.json")) if r["views"] else None}
+                                 "views_sha256": r["view_source"].get("sha256"),
+                                 "view_source": r["view_source"]}
                            for n, r in runs.items()}}
     (args.output_dir / "provenance.json").write_text(json.dumps(provenance, indent=2))
     print(json.dumps(pair_summaries, indent=2))

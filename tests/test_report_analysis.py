@@ -1,11 +1,12 @@
 """Offline analysis must preserve the evaluator's strict matching and view order."""
 
 import json
+import ast
 from pathlib import Path
 import tempfile
 import unittest
 
-from analyze_scanqa import compare, draw_case, load_run, question_type
+from analyze_scanqa import compare, draw_case, load_run, question_type, replay_view_nms, sha256
 
 
 class AnalysisTests(unittest.TestCase):
@@ -83,6 +84,65 @@ class AnalysisTests(unittest.TestCase):
     def test_lexical_groups(self):
         self.assertEqual(question_type("How many chairs?"), "how many")
         self.assertEqual(question_type(" Where is the chair?"), "where")
+
+    def reconstruction_inputs(self):
+        import pandas as pd
+        images = ["1.jpg", "2.jpg", "3.jpg"]
+        ranking = self.root / "ScanQA_val_view_ranking.json"
+        ranking.write_text(json.dumps({str(i): images for i in range(4)}))
+        # The second view is suppressed; equality to 0.5 must NOT suppress the third.
+        distances = pd.DataFrame([[0, .1, .5], [.1, 0, .9], [.5, .9, 0]], index=images, columns=images)
+        distances.to_csv(self.root / "scene.csv")
+        return ranking, distances
+
+    def test_reconstruction_is_nms_not_topk(self):
+        ranking, _ = self.reconstruction_inputs()
+        path = self.run_file("a", ["red"] * 4)
+        run, gold = load_run("a", path, self.annotations, 4, ranking_path=ranking,
+                             distance_dir=self.root, cdviews_budget=9)
+        self.assertEqual(run["views"]["0"]["images"], ["1.jpg", "3.jpg"])
+        self.assertEqual(run["views"]["0"]["candidate_count"], 3)
+        self.assertEqual(run["view_source"]["kind"], "reconstructed_cdviews_nms")
+        self.assertFalse(Path(str(path) + ".views.json").exists())
+        rows, _ = compare(gold, run, run)
+        self.assertEqual(rows[0]["view_jaccard"], 1)
+
+    def test_replay_matches_original_inference_function(self):
+        _, distances = self.reconstruction_inputs()
+        path = Path(__file__).resolve().parents[1] / "cdviews/qa_inference.py"
+        function = next(node for node in ast.parse(path.read_text()).body
+                        if isinstance(node, ast.FunctionDef) and node.name == "viewNMS")
+        namespace = {}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), "exec"), namespace)
+        for candidates in (["1.jpg", "2.jpg", "3.jpg"], ["3.jpg", "2.jpg", "1.jpg"]):
+            for budget in (1, 2, 9):
+                for threshold in (0, .5, 1):
+                    self.assertEqual(replay_view_nms(candidates, distances, budget, threshold),
+                                     namespace["viewNMS"](candidates, distances, budget, threshold))
+
+    def test_recorded_views_take_precedence(self):
+        path = self.run_file("a", ["red"] * 4, ["2.jpg", "1.jpg"])
+        run, _ = load_run("a", path, self.annotations, 4, ranking_path=self.root / "nonexistent.json")
+        self.assertEqual(run["view_source"]["kind"], "recorded")
+        self.assertEqual(run["views"]["0"]["images"], ["2.jpg", "1.jpg"])
+
+    def test_reconstruction_verifies_original_ranking(self):
+        ranking, _ = self.reconstruction_inputs()
+        path = self.run_file("a", ["red"] * 4)
+        experiment = {"method": "cdviews", "input_views": 9,
+                      "inputs": {"val_candidates": {"sha256": sha256(ranking)}}}
+        (self.root / "experiment.json").write_text(json.dumps(experiment))
+        run, _ = load_run("a", path, self.annotations, 4, ranking_path=ranking, distance_dir=self.root)
+        self.assertTrue(run["view_source"]["ranking_hash_verified_against_experiment"])
+        ranking.write_text(ranking.read_text() + "\n")
+        with self.assertRaisesRegex(ValueError, "SHA256"):
+            load_run("a", path, self.annotations, 4, ranking_path=ranking, distance_dir=self.root)
+
+    def test_missing_distances_do_not_fall_back_to_topk(self):
+        ranking, _ = self.reconstruction_inputs()
+        path = self.run_file("a", ["red"] * 4)
+        with self.assertRaisesRegex(FileNotFoundError, "view-distance CSV"):
+            load_run("a", path, self.annotations, 4, ranking_path=ranking, distance_dir=self.root / "missing")
 
 
 if __name__ == "__main__":
