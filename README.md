@@ -40,7 +40,7 @@ Soft 调整视图集合的去重策略，QMP 将选择器的视觉池化替换�
 
 代码阅读顺序：`run_scanqa.py`（统一运行入口）、`cdviews/soft_selection.py`（Soft）、`cdviews/r2_model.py` 与 `cdviews/train_r2.py`（QMP 及训练）、`evaluate_scanqa.py`（指标评测）、`analyze_scanqa.py`（逐题与案例分析）。3D-VisTA 的实现不在本仓库中；表内分数来自单独运行后采用相同验证集和评测脚本的结果。Coverage 是已做过的探索实验，其代码和说明保留，汇报聚焦 Soft、QMP 及组合。
 
-提交 ZIP 保留项目代码、配置、测试、说明文档、架构图及本地论文原文 `docs/cdviews.pdf`。实验报告、汇报 PPT 和预测/分析输出另行保存；数据集、模型权重和特征缓存需按各实验说明准备。`.git/`、`tmp/`、`.local-archive/`、Python 缓存、系统杂项和本机私有配置不进入提交包。旧版 LLaVA-v1.5 的 Cog/Replicate 单图部署示例 `predict.py`、`cog.yaml` 已移出实验目录并保留本地归档；作者的 `llava/`、`trl/` 和 cdViews 实现保留。
+提交 ZIP 保留项目代码、配置、测试、说明文档和架构图，不包含论文 PDF。`docs/cdviews.pdf` 仅为本地阅读副本，因此代码包内指向该文件的链接需自行放入论文后使用。实验报告、汇报 PPT 和预测/分析输出另行保存；数据集、模型权重和特征缓存需按各实验说明准备。`.git/`、`tmp/`、`.local-archive/`、Python 缓存、系统杂项和本机私有配置不进入提交包。旧版 LLaVA-v1.5 的 Cog/Replicate 单图部署示例 `predict.py`、`cog.yaml` 已移出实验目录并保留本地归档；作者的 `llava/`、`trl/` 和 cdViews 实现保留。
 
 下面保留作者原始说明作为方法和依赖参考，其中测试集及训练命令不代表本项目当前运行方案。
 
