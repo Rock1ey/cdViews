@@ -6,7 +6,8 @@
 - **BLIP 图文检索与权重下载：** [docs/RETRIEVAL_BASELINE.md](docs/RETRIEVAL_BASELINE.md)
 - **内容与位姿软去重实验（无需训练）：** [docs/SOFT_SELECTION.md](docs/SOFT_SELECTION.md)
 - **集合感知互补选图实验（无需训练）：** [docs/COVERAGE_SELECTION.md](docs/COVERAGE_SELECTION.md)
-- **R2 多查询选择器（双卡训练、推理与评测）：** [docs/R2_TRAINING.md](docs/R2_TRAINING.md)
+- **QMP-Selector（代码中名为 R2，含双卡训练、推理与评测）：** [docs/R2_TRAINING.md](docs/R2_TRAINING.md)
+- **逐题性能统计与案例图片生成：** [docs/REPORT_ANALYSIS.md](docs/REPORT_ANALYSIS.md)
 - **项目约定：** [AGENTS.md](AGENTS.md)
 - **论文原文：** [docs/cdviews.pdf](docs/cdviews.pdf)
 - **代码与论文笔记：** [docs/CODE_PAPER_GUIDE_CN.md](docs/CODE_PAPER_GUIDE_CN.md)
@@ -19,6 +20,27 @@
 source scripts/activate.sh cloud 0
 python run_scanqa.py --stage smoke --run-dir "$CDV_RUNS/baseline_v1"
 ```
+
+## 课程实验结果与代码交付
+
+以下为本实验在完整 ScanQA `val`（4,675 题）上使用同一评测脚本得到的结果，与下方保留的作者论文结果分开列示。QMP-Selector 是报告中对 R2 的命名，命令和模块名继续使用 `r2`。
+
+| 方法 | 视图预算 k | EM@1 | BLEU-1 | ROUGE-L | CIDEr |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 3D-VisTA | — | 22.3 | 32.0 | 35.5 | 69.5 |
+| LLaVA-OV + Uniform | 9 | 26.4 | 41.3 | 43.4 | 86.7 |
+| LLaVA-OV + Uniform | 17 | 27.8 | 42.5 | 45.0 | 90.9 |
+| LLaVA-OV + Retrieval | 17 | 28.6 | 44.7 | 46.9 | 95.9 |
+| LLaVA-OV + cdViews | 9 | 29.1 | 44.7 | 47.4 | 96.5 |
+| Soft | 9 | 29.1 | 45.1 | 47.5 | **97.9** |
+| QMP-Selector | 9 | **29.3** | 45.1 | **47.7** | 97.6 |
+| QMP-Selector + Soft | 9 | 28.9 | 45.1 | 47.6 | 97.4 |
+
+Soft 调整视图集合的去重策略，QMP 将选择器的视觉池化替换为问题条件化多查询池化。两者各有小幅收益，组合没有进一步提升。方法没有额外建立物体跨视图对应、统一三维地图或精确空间测量模块，当前结果尚不足以证明复杂跨视图几何推理能力已得到解决。
+
+代码阅读顺序：`run_scanqa.py`（统一运行入口）、`cdviews/soft_selection.py`（Soft）、`cdviews/r2_model.py` 与 `cdviews/train_r2.py`（QMP 及训练）、`evaluate_scanqa.py`（指标评测）、`analyze_scanqa.py`（逐题与案例分析）。3D-VisTA 的实现不在本仓库中；表内分数来自单独运行后采用相同验证集和评测脚本的结果。Coverage 是已做过的探索实验，其代码和说明保留，汇报聚焦 Soft、QMP 及组合。
+
+提交 ZIP 保留项目代码、配置、测试、说明文档、架构图及本地论文原文 `docs/cdviews.pdf`。实验报告、汇报 PPT 和预测/分析输出另行保存；数据集、模型权重和特征缓存需按各实验说明准备。`.git/`、`tmp/`、`.local-archive/`、Python 缓存、系统杂项和本机私有配置不进入提交包。旧版 LLaVA-v1.5 的 Cog/Replicate 单图部署示例 `predict.py`、`cog.yaml` 已移出实验目录并保留本地归档；作者的 `llava/`、`trl/` 和 cdViews 实现保留。
 
 下面保留作者原始说明作为方法和依赖参考，其中测试集及训练命令不代表本项目当前运行方案。
 

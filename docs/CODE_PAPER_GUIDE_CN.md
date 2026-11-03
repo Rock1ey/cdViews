@@ -33,7 +33,7 @@
 | [llava/serve/](../llava/serve) | Gradio 界面、模型 worker、控制器、命令行交互 | 非论文批量问答入口 |
 | [trl/](../trl) | trainer 提供 PPO/DPO/SFT 等；models 提供训练包装；extras、environment、core 提供辅助工具 | 未被 cdViews 选择器训练循环直接使用 |
 | [llava/mm_utils.py](../llava/mm_utils.py#L314)、[constants.py](../llava/constants.py#L6)、[conversation.py](../llava/conversation.py#L1) | 图像处理、特殊 token、通用对话模板 | 核心脚本另有复制的 `preprocess_qwen` |
-| [predict.py](../predict.py#L75)、[cog.yaml](../cog.yaml#L1) | Cog/Replicate 单图推理封装，代码加载 LLaVA-v1.5-13B | 不是 cdViews 的 7B 多视图问答入口 |
+| `predict.py`、`cog.yaml`（已归档，不随实验代码提交） | 原仓库的 Cog/Replicate 单图推理封装，加载 LLaVA-v1.5-13B | 不参与 cdViews 实验；本地归档位于 `.local-archive/upstream-deployment/`，原文件也可从 Git 历史恢复 |
 | [pyproject.toml](../pyproject.toml#L8)、[requirements.txt](../requirements.txt#L1) | 包元数据、依赖清单 | 安装支持；不能据依赖中出现 DPO 等就认为论文使用了它 |
 | [REPRODUCE_A6000_CN.md](setup/REPRODUCE_A6000_CN.md#L1) | 本地已有复现说明 | 阅读时为未跟踪文件；不是据此认定原始实现的证据 |
 
